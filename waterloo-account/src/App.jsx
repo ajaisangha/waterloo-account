@@ -1,22 +1,15 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import "./App.css";
+import { db } from "./firebase";
+import { doc, onSnapshot, setDoc, serverTimestamp } from "firebase/firestore";
 
-const STORAGE_KEY = "waterloo-account-sheets-v4";
+const APP_DOC_PATH = ["apps", "waterloo-account"];
 
 const uid = () => Math.random().toString(36).slice(2, 10);
 
-const starterData = {
+const emptyData = {
   categories: [],
 };
-
-function loadData() {
-  try {
-    const saved = localStorage.getItem(STORAGE_KEY);
-    return saved ? JSON.parse(saved) : starterData;
-  } catch {
-    return starterData;
-  }
-}
 
 function DialogBox({ dialogRef, title, children, actions }) {
   return (
@@ -42,10 +35,10 @@ function createFormulaPart(fieldName = "", operator = "+") {
 }
 
 export default function App() {
-  const [data, setData] = useState(loadData);
-  const [selectedCategoryId, setSelectedCategoryId] = useState(
-    loadData().categories[0]?.id || null
-  );
+  const [data, setData] = useState(emptyData);
+  const [selectedCategoryId, setSelectedCategoryId] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
 
   const [sheetForm, setSheetForm] = useState({ name: "" });
   const [tableForm, setTableForm] = useState({ name: "" });
@@ -70,9 +63,34 @@ export default function App() {
   const rowDialogRef = useRef(null);
   const confirmDialogRef = useRef(null);
 
+  const appDocRef = doc(db, ...APP_DOC_PATH);
+
   useEffect(() => {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
-  }, [data]);
+    const unsubscribe = onSnapshot(
+      appDocRef,
+      async (snapshot) => {
+        if (snapshot.exists()) {
+          const remoteData = snapshot.data();
+          setData({
+            categories: remoteData.categories || [],
+          });
+        } else {
+          await setDoc(appDocRef, {
+            categories: [],
+            updatedAt: serverTimestamp(),
+          });
+          setData(emptyData);
+        }
+        setLoading(false);
+      },
+      (error) => {
+        console.error("Firestore listener error:", error);
+        setLoading(false);
+      }
+    );
+
+    return () => unsubscribe();
+  }, []);
 
   const categories = data.categories;
 
@@ -97,16 +115,40 @@ export default function App() {
     );
   }, [selectedTable]);
 
+  useEffect(() => {
+    if (!selectedCategoryId && categories.length > 0) {
+      setSelectedCategoryId(categories[0].id);
+    }
+
+    if (
+      selectedCategoryId &&
+      !categories.some((category) => category.id === selectedCategoryId)
+    ) {
+      setSelectedCategoryId(categories[0]?.id || null);
+    }
+  }, [categories, selectedCategoryId]);
+
+  async function saveData(nextData) {
+    setSaving(true);
+    try {
+      await setDoc(appDocRef, {
+        categories: nextData.categories,
+        updatedAt: serverTimestamp(),
+      });
+    } catch (error) {
+      console.error("Save failed:", error);
+      alert("Could not save data to Firebase.");
+    } finally {
+      setSaving(false);
+    }
+  }
+
   function openDialog(ref) {
     ref.current?.showModal();
   }
 
   function closeDialog(ref) {
     ref.current?.close();
-  }
-
-  function updateData(updater) {
-    setData((current) => updater(current));
   }
 
   function openConfirmDialog(title, message, action) {
@@ -172,7 +214,7 @@ export default function App() {
       ? `${buildFormulaText(fieldForm.formulaParts)} = ${fieldForm.name}`
       : "";
 
-  function addSheet() {
+  async function addSheet() {
     const name = sheetForm.name.trim();
     if (!name) return;
 
@@ -182,17 +224,18 @@ export default function App() {
       table: null,
     };
 
-    updateData((current) => ({
-      ...current,
-      categories: [...current.categories, newSheet],
-    }));
+    const nextData = {
+      ...data,
+      categories: [...data.categories, newSheet],
+    };
 
+    await saveData(nextData);
     setSelectedCategoryId(newSheet.id);
     setSheetForm({ name: "" });
     closeDialog(sheetDialogRef);
   }
 
-  function addTable() {
+  async function addTable() {
     if (!selectedCategory) return;
 
     const name = tableForm.name.trim();
@@ -205,9 +248,9 @@ export default function App() {
       rows: [],
     };
 
-    updateData((current) => ({
-      ...current,
-      categories: current.categories.map((cat) =>
+    const nextData = {
+      ...data,
+      categories: data.categories.map((cat) =>
         cat.id === selectedCategory.id
           ? {
               ...cat,
@@ -215,13 +258,14 @@ export default function App() {
             }
           : cat
       ),
-    }));
+    };
 
+    await saveData(nextData);
     setTableForm({ name: "" });
     closeDialog(tableDialogRef);
   }
 
-  function copyTable() {
+  async function copyTable() {
     if (!selectedCategory || !selectedTable) return;
 
     const copiedTable = {
@@ -238,9 +282,9 @@ export default function App() {
       rows: [],
     };
 
-    updateData((current) => ({
-      ...current,
-      categories: current.categories.map((cat) =>
+    const nextData = {
+      ...data,
+      categories: data.categories.map((cat) =>
         cat.id === selectedCategory.id
           ? {
               ...cat,
@@ -248,10 +292,12 @@ export default function App() {
             }
           : cat
       ),
-    }));
+    };
+
+    await saveData(nextData);
   }
 
-  function addField() {
+  async function addField() {
     if (!selectedCategory || !selectedTable) return;
 
     const name = fieldForm.name.trim();
@@ -282,9 +328,9 @@ export default function App() {
       newField.linkFieldName = fieldForm.linkFieldName;
     }
 
-    updateData((current) => ({
-      ...current,
-      categories: current.categories.map((cat) =>
+    const nextData = {
+      ...data,
+      categories: data.categories.map((cat) =>
         cat.id === selectedCategory.id
           ? {
               ...cat,
@@ -299,8 +345,9 @@ export default function App() {
             }
           : cat
       ),
-    }));
+    };
 
+    await saveData(nextData);
     resetFieldForm();
     closeDialog(fieldDialogRef);
   }
@@ -319,7 +366,7 @@ export default function App() {
     openDialog(rowDialogRef);
   }
 
-  function addRow() {
+  async function addRow() {
     if (!selectedCategory || !selectedTable) return;
 
     const newRow = {
@@ -327,9 +374,9 @@ export default function App() {
       values: rowForm,
     };
 
-    updateData((current) => ({
-      ...current,
-      categories: current.categories.map((cat) =>
+    const nextData = {
+      ...data,
+      categories: data.categories.map((cat) =>
         cat.id === selectedCategory.id
           ? {
               ...cat,
@@ -340,18 +387,19 @@ export default function App() {
             }
           : cat
       ),
-    }));
+    };
 
+    await saveData(nextData);
     setRowForm({});
     closeDialog(rowDialogRef);
   }
 
-  function updateCell(rowId, fieldName, value) {
+  async function updateCell(rowId, fieldName, value) {
     if (!selectedCategory || !selectedTable) return;
 
-    updateData((current) => ({
-      ...current,
-      categories: current.categories.map((cat) =>
+    const nextData = {
+      ...data,
+      categories: data.categories.map((cat) =>
         cat.id === selectedCategory.id
           ? {
               ...cat,
@@ -372,7 +420,9 @@ export default function App() {
             }
           : cat
       ),
-    }));
+    };
+
+    await saveData(nextData);
   }
 
   function getCategoryById(categoryId) {
@@ -427,21 +477,7 @@ export default function App() {
     if (field.formulaParts?.length) {
       return evaluateFormulaField(row, field);
     }
-
-    if (!selectedTable || !field.formula) return "";
-    try {
-      let expression = field.formula;
-      selectedTable.fields.forEach((currentField) => {
-        const rawValue = row.values[currentField.name];
-        const numericValue = Number(rawValue || 0);
-        const pattern = new RegExp(`\\b${currentField.name}\\b`, "g");
-        expression = expression.replace(pattern, numericValue);
-      });
-      const result = Function(`"use strict"; return (${expression})`)();
-      return Number.isFinite(result) ? result : "";
-    } catch {
-      return "Error";
-    }
+    return "";
   }
 
   function getLinkedDisplayValue(row, field) {
@@ -490,11 +526,14 @@ export default function App() {
     if (!file) return;
 
     const reader = new FileReader();
-    reader.onload = (e) => {
+    reader.onload = async (e) => {
       try {
         const imported = JSON.parse(e.target.result);
-        setData(imported);
-        setSelectedCategoryId(imported.categories?.[0]?.id || null);
+        const nextData = {
+          categories: imported.categories || [],
+        };
+        await saveData(nextData);
+        setSelectedCategoryId(nextData.categories?.[0]?.id || null);
       } catch {
         openConfirmDialog(
           "Import Error",
@@ -510,14 +549,15 @@ export default function App() {
     openConfirmDialog(
       "Delete Sheet",
       "Are you sure you want to delete this sheet?",
-      () => {
+      async () => {
         const remaining = categories.filter((cat) => cat.id !== sheetId);
 
-        updateData((current) => ({
-          ...current,
-          categories: current.categories.filter((cat) => cat.id !== sheetId),
-        }));
+        const nextData = {
+          ...data,
+          categories: data.categories.filter((cat) => cat.id !== sheetId),
+        };
 
+        await saveData(nextData);
         setSelectedCategoryId(remaining[0]?.id || null);
       }
     );
@@ -527,10 +567,10 @@ export default function App() {
     openConfirmDialog(
       "Delete Field",
       `Delete field "${fieldName}"?`,
-      () => {
-        updateData((current) => ({
-          ...current,
-          categories: current.categories.map((cat) =>
+      async () => {
+        const nextData = {
+          ...data,
+          categories: data.categories.map((cat) =>
             cat.id === selectedCategory.id
               ? {
                   ...cat,
@@ -546,16 +586,18 @@ export default function App() {
                 }
               : cat
           ),
-        }));
+        };
+
+        await saveData(nextData);
       }
     );
   }
 
   function requestDeleteRow(rowId) {
-    openConfirmDialog("Delete Row", "Delete this row?", () => {
-      updateData((current) => ({
-        ...current,
-        categories: current.categories.map((cat) =>
+    openConfirmDialog("Delete Row", "Delete this row?", async () => {
+      const nextData = {
+        ...data,
+        categories: data.categories.map((cat) =>
           cat.id === selectedCategory.id
             ? {
                 ...cat,
@@ -566,18 +608,29 @@ export default function App() {
               }
             : cat
         ),
-      }));
+      };
+
+      await saveData(nextData);
     });
   }
 
   function requestReset() {
     openConfirmDialog(
       "Reset Data",
-      "This will clear everything and show a blank slate.",
-      () => {
-        setData(starterData);
+      "This will clear everything for everyone viewing this app.",
+      async () => {
+        await saveData(emptyData);
         setSelectedCategoryId(null);
       }
+    );
+  }
+
+  if (loading) {
+    return (
+      <div className="empty-state" style={{ margin: 24 }}>
+        <h2>Loading shared workspace...</h2>
+        <p>Please wait while Firebase connects.</p>
+      </div>
     );
   }
 
@@ -589,7 +642,7 @@ export default function App() {
             <div className="brand-mark">W</div>
             <div>
               <h1>Waterloo Account</h1>
-              <p>Simple local sheets</p>
+              <p>{saving ? "Saving..." : "Realtime shared workspace"}</p>
             </div>
           </div>
 
@@ -630,7 +683,7 @@ export default function App() {
           {!selectedCategory ? (
             <section className="empty-state">
               <h2>No sheet selected</h2>
-              <p>Create a new sheet to start with a blank slate.</p>
+              <p>Create a new sheet to start with a shared blank slate.</p>
             </section>
           ) : (
             <>
