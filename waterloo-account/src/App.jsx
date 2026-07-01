@@ -102,6 +102,8 @@ export default function App() {
   const [editingTableId, setEditingTableId] = useState(null);
   const [editingSheetId, setEditingSheetId] = useState(null);
   const [rowForm, setRowForm] = useState({});
+
+  const [sheetQuickTableId, setSheetQuickTableId] = useState("");
   const [sheetQuickField, setSheetQuickField] = useState("");
   const [tableQuickField, setTableQuickField] = useState("");
 
@@ -195,6 +197,23 @@ export default function App() {
     }));
   }, [allTables]);
 
+  const sheetQuickTableOptions = useMemo(() => {
+    return selectedCategory?.tables || [];
+  }, [selectedCategory]);
+
+  const sheetQuickFieldOptions = useMemo(() => {
+    if (!sheetQuickTableId) return [];
+    const table = (selectedCategory?.tables || []).find(
+      (item) => item.id === sheetQuickTableId
+    );
+    return (table?.fields || []).map((field) => field.name);
+  }, [selectedCategory, sheetQuickTableId]);
+
+  const tableQuickFieldOptions = useMemo(() => {
+    if (!selectedTable) return [];
+    return (selectedTable.fields || []).map((field) => field.name);
+  }, [selectedTable]);
+
   function getFormulaFieldsForTable(tableId, excludeEditingField = true) {
     const table = allTables.find((item) => item.id === tableId);
     if (!table) return [];
@@ -213,82 +232,37 @@ export default function App() {
   }
 
   const selectedSheetQuickSummary = useMemo(() => {
-    if (!selectedCategory || !sheetQuickField) return null;
+    if (!selectedCategory || !sheetQuickTableId || !sheetQuickField) return null;
 
-    for (const table of selectedCategory.tables || []) {
-      const firstRow = table.rows?.[0];
-      if (!firstRow) continue;
+    const table = (selectedCategory.tables || []).find(
+      (item) => item.id === sheetQuickTableId
+    );
 
-      const field = (table.fields || []).find((item) => item.name === sheetQuickField);
-      if (!field) continue;
+    if (!table) return null;
 
-      let value = "-";
-      if (field.type === "formula") {
-        value = getFormulaValue(firstRow, field, table);
-      } else {
-        value = firstRow.values?.[field.name] || "-";
-      }
+    const firstRow = table.rows?.[0];
+    const field = (table.fields || []).find((item) => item.name === sheetQuickField);
 
-      return {
-        field: sheetQuickField,
-        value,
-      };
-    }
-
-    return {
-      field: sheetQuickField,
-      value: "-",
-    };
-  }, [selectedCategory, sheetQuickField, allTables]);
-
-  const selectedTableQuickSummary = useMemo(() => {
-    if (!selectedTable || !tableQuickField) return null;
-
-    const firstRow = selectedTable.rows?.[0];
-    const field = (selectedTable.fields || []).find((item) => item.name === tableQuickField);
-
-    if (!field) {
-      return {
-        field: tableQuickField,
-        value: "-",
-      };
-    }
+    if (!field) return null;
 
     if (!firstRow) {
       return {
-        field: tableQuickField,
-        value: "-",
+        field: sheetQuickField,
+        value: "",
       };
     }
 
     const value =
       field.type === "formula"
-        ? getFormulaValue(firstRow, field, selectedTable)
-        : firstRow.values?.[field.name] || "-";
+        ? getFormulaValue(firstRow, field, table)
+        : firstRow.values?.[field.name] || "";
 
     return {
-      field: tableQuickField,
+      tableName: table.name,
+      field: sheetQuickField,
       value,
     };
-  }, [selectedTable, tableQuickField, allTables]);
-
-  const sheetQuickFieldOptions = useMemo(() => {
-    if (!selectedCategory) return [];
-    const names = new Set();
-
-    (selectedCategory.tables || []).forEach((table) => {
-      (table.fields || []).forEach((field) => {
-        names.add(field.name);
-      });
-    });
-
-    return Array.from(names);
-  }, [selectedCategory]);
-
-  const tableQuickFieldOptions = useMemo(() => {
-    if (!selectedTable) return [];
-    return (selectedTable.fields || []).map((field) => field.name);
-  }, [selectedTable]);
+  }, [selectedCategory, sheetQuickTableId, sheetQuickField, allTables]);
 
   useEffect(() => {
     if (!selectedCategoryId && categories.length > 0) {
@@ -320,16 +294,26 @@ export default function App() {
   }, [selectedCategory, selectedTableId]);
 
   useEffect(() => {
-    if (!sheetQuickFieldOptions.includes(sheetQuickField)) {
-      setSheetQuickField(sheetQuickFieldOptions[0] || "");
+    if (
+      sheetQuickTableId &&
+      !sheetQuickTableOptions.some((table) => table.id === sheetQuickTableId)
+    ) {
+      setSheetQuickTableId("");
+      setSheetQuickField("");
     }
-  }, [sheetQuickFieldOptions, sheetQuickField]);
+  }, [sheetQuickTableId, sheetQuickTableOptions]);
 
   useEffect(() => {
-    if (!tableQuickFieldOptions.includes(tableQuickField)) {
-      setTableQuickField(tableQuickFieldOptions[0] || "");
+    if (sheetQuickField && !sheetQuickFieldOptions.includes(sheetQuickField)) {
+      setSheetQuickField("");
     }
-  }, [tableQuickFieldOptions, tableQuickField]);
+  }, [sheetQuickField, sheetQuickFieldOptions]);
+
+  useEffect(() => {
+    if (tableQuickField && !tableQuickFieldOptions.includes(tableQuickField)) {
+      setTableQuickField("");
+    }
+  }, [tableQuickField, tableQuickFieldOptions]);
 
   function sanitizeField(field) {
     const cleanField = {
@@ -1111,6 +1095,9 @@ export default function App() {
         setSelectedCategoryId(null);
         setSelectedTableId(null);
         setExpandedTableIds([]);
+        setSheetQuickTableId("");
+        setSheetQuickField("");
+        setTableQuickField("");
       }
     );
   }
@@ -1206,10 +1193,29 @@ export default function App() {
 
                   <div className="summary-tools">
                     <div className="summary-config">
+                      <label>Sheet quick table</label>
+                      <select
+                        value={sheetQuickTableId}
+                        onChange={(e) => {
+                          setSheetQuickTableId(e.target.value);
+                          setSheetQuickField("");
+                        }}
+                      >
+                        <option value="">None</option>
+                        {sheetQuickTableOptions.map((table) => (
+                          <option key={table.id} value={table.id}>
+                            {table.name}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+
+                    <div className="summary-config">
                       <label>Sheet quick field</label>
                       <select
                         value={sheetQuickField}
                         onChange={(e) => setSheetQuickField(e.target.value)}
+                        disabled={!sheetQuickTableId}
                       >
                         <option value="">None</option>
                         {sheetQuickFieldOptions.map((fieldName) => (
@@ -1220,12 +1226,16 @@ export default function App() {
                       </select>
                     </div>
 
-                    {selectedSheetQuickSummary && (
-                      <div className="header-summary-pill">
-                        <span>{selectedSheetQuickSummary.field}</span>
-                        <strong>{selectedSheetQuickSummary.value}</strong>
-                      </div>
-                    )}
+                    {selectedSheetQuickSummary?.field &&
+                      selectedSheetQuickSummary?.value !== "" && (
+                        <div className="header-summary-pill">
+                          <span>
+                            {selectedSheetQuickSummary.tableName} ·{" "}
+                            {selectedSheetQuickSummary.field}
+                          </span>
+                          <strong>{selectedSheetQuickSummary.value}</strong>
+                        </div>
+                      )}
 
                     <button onClick={() => openDialog(tableDialogRef)}>Add Table</button>
                   </div>
@@ -1242,12 +1252,12 @@ export default function App() {
                       (field) => field.name === tableQuickField
                     );
 
-                    let quickValue = "-";
+                    let quickValue = "";
                     if (quickField && firstRow) {
                       quickValue =
                         quickField.type === "formula"
                           ? getFormulaValue(firstRow, quickField, table)
-                          : firstRow.values?.[quickField.name] || "-";
+                          : firstRow.values?.[quickField.name] || "";
                     }
 
                     return (
@@ -1270,7 +1280,7 @@ export default function App() {
 
                             <div className="table-title-stack">
                               <span className="table-title-text">{table.name}</span>
-                              {tableQuickField && (
+                              {tableQuickField && quickValue !== "" && (
                                 <small className="table-inline-summary">
                                   {tableQuickField}: {quickValue}
                                 </small>
@@ -1360,7 +1370,7 @@ export default function App() {
                               </div>
                               <div className="info-card">
                                 <span>Quick value</span>
-                                <strong>{tableQuickField ? quickValue : "-"}</strong>
+                                <strong>{tableQuickField ? quickValue || "" : ""}</strong>
                               </div>
                             </div>
 

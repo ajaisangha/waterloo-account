@@ -60,6 +60,11 @@ button:active {
   transform: translateY(1px);
 }
 
+button:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
 input,
 select,
 textarea {
@@ -225,7 +230,7 @@ input[type="number"] {
 .summary-config {
   display: grid;
   gap: 6px;
-  min-width: 190px;
+  min-width: 180px;
 }
 
 .summary-config label {
@@ -300,6 +305,8 @@ input[type="number"] {
 .info-card strong {
   font-size: 22px;
   color: var(--text);
+  min-height: 28px;
+  display: inline-block;
 }
 
 .field-strip {
@@ -382,6 +389,9 @@ input[type="number"] {
   color: var(--muted);
   font-size: 12px;
   font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .table-accordion-body {
