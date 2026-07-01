@@ -2,12 +2,12 @@ import { initializeApp } from "firebase/app";
 import { getFirestore } from "firebase/firestore";
 
 const firebaseConfig = {
-  apiKey: import.meta.env.VITE_FIREBASE_API_KEY,
-  authDomain: import.meta.env.VITE_FIREBASE_AUTH_DOMAIN,
-  projectId: import.meta.env.VITE_FIREBASE_PROJECT_ID,
-  storageBucket: import.meta.env.VITE_FIREBASE_STORAGE_BUCKET,
-  messagingSenderId: import.meta.env.VITE_FIREBASE_MESSAGING_SENDER_ID,
-  appId: import.meta.env.VITE_FIREBASE_APP_ID,
+  apiKey: "AIzaSyB1E9t2PImQy-7HZTf6N8kbeyqDHjuYe1Y",
+  authDomain: "waterloo-account.firebaseapp.com",
+  projectId: "waterloo-account",
+  storageBucket: "waterloo-account.firebasestorage.app",
+  messagingSenderId: "479923497080",
+  appId: "1:479923497080:web:a1c4aa896844faea7da58d"
 };
 
 const app = initializeApp(firebaseConfig);

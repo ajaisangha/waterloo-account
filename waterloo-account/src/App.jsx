@@ -30,26 +30,80 @@ function DialogBox({ dialogRef, title, children, actions }) {
   );
 }
 
-function createFormulaPart(fieldName = "", operator = "+") {
-  return { id: uid(), fieldName, operator };
+function createFormulaPart(tableId = "", fieldName = "", operator = "+") {
+  return { id: uid(), tableId, fieldName, operator };
+}
+
+function deepCopyTable(table) {
+  return {
+    id: uid(),
+    name: `${table.name} Copy`,
+    fields: (table.fields || []).map((field) => {
+      const copiedField = {
+        id: uid(),
+        name: field.name,
+        type: field.type,
+      };
+
+      if (field.type === "formula") {
+        copiedField.formulaParts = (field.formulaParts || []).map((part) => ({
+          id: uid(),
+          tableId: part.tableId || "",
+          fieldName: part.fieldName || "",
+          operator: part.operator || "",
+        }));
+        copiedField.formula = field.formula || "";
+        copiedField.roundResult = Boolean(field.roundResult);
+      }
+
+      if (field.type === "link") {
+        copiedField.linkCategoryId = field.linkCategoryId || "";
+        copiedField.linkFieldName = field.linkFieldName || "";
+      }
+
+      return copiedField;
+    }),
+    rows: (table.rows || []).map((row) => ({
+      id: uid(),
+      values: { ...(row.values || {}) },
+    })),
+  };
+}
+
+function deepCopySheet(sheet) {
+  return {
+    id: uid(),
+    name: `${sheet.name} Copy`,
+    tables: (sheet.tables || []).map((table) => deepCopyTable(table)),
+  };
 }
 
 export default function App() {
   const [data, setData] = useState(emptyData);
   const [selectedCategoryId, setSelectedCategoryId] = useState(null);
+  const [selectedTableId, setSelectedTableId] = useState(null);
+  const [expandedTableIds, setExpandedTableIds] = useState([]);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
 
   const [sheetForm, setSheetForm] = useState({ name: "" });
   const [tableForm, setTableForm] = useState({ name: "" });
+  const [renameTableForm, setRenameTableForm] = useState({ name: "" });
+  const [renameSheetForm, setRenameSheetForm] = useState({ name: "" });
   const [fieldForm, setFieldForm] = useState({
     name: "",
     type: "text",
     linkCategoryId: "",
     linkFieldName: "",
-    formulaParts: [createFormulaPart("", "+"), createFormulaPart("", "")],
+    roundResult: false,
+    formulaParts: [createFormulaPart("", "", "+"), createFormulaPart("", "", "")],
   });
+  const [editingFieldId, setEditingFieldId] = useState(null);
+  const [editingTableId, setEditingTableId] = useState(null);
+  const [editingSheetId, setEditingSheetId] = useState(null);
   const [rowForm, setRowForm] = useState({});
+  const [sheetQuickField, setSheetQuickField] = useState("");
+  const [tableQuickField, setTableQuickField] = useState("");
 
   const [confirmState, setConfirmState] = useState({
     title: "",
@@ -59,6 +113,8 @@ export default function App() {
 
   const sheetDialogRef = useRef(null);
   const tableDialogRef = useRef(null);
+  const renameTableDialogRef = useRef(null);
+  const renameSheetDialogRef = useRef(null);
   const fieldDialogRef = useRef(null);
   const rowDialogRef = useRef(null);
   const confirmDialogRef = useRef(null);
@@ -68,23 +124,35 @@ export default function App() {
   useEffect(() => {
     const unsubscribe = onSnapshot(
       appDocRef,
-      async (snapshot) => {
+      (snapshot) => {
         if (snapshot.exists()) {
           const remoteData = snapshot.data();
+          const normalizedCategories = (remoteData.categories || []).map((category) => {
+            const tables = Array.isArray(category.tables)
+              ? category.tables
+              : category.table
+              ? [category.table]
+              : [];
+
+            return {
+              id: category.id,
+              name: category.name,
+              tables,
+            };
+          });
+
           setData({
-            categories: remoteData.categories || [],
+            categories: normalizedCategories,
           });
         } else {
-          await setDoc(appDocRef, {
-            categories: [],
-            updatedAt: serverTimestamp(),
-          });
-          setData(emptyData);
+          setData({ categories: [] });
         }
+
         setLoading(false);
       },
       (error) => {
-        console.error("Firestore listener error:", error);
+        console.error("Snapshot listener error:", error);
+        alert(`Listener failed: ${error.message}`);
         setLoading(false);
       }
     );
@@ -98,21 +166,128 @@ export default function App() {
     return categories.find((cat) => cat.id === selectedCategoryId) || null;
   }, [categories, selectedCategoryId]);
 
-  const selectedTable = selectedCategory?.table || null;
+  const selectedTable = useMemo(() => {
+    return selectedCategory?.tables?.find((table) => table.id === selectedTableId) || null;
+  }, [selectedCategory, selectedTableId]);
+
+  const allTables = useMemo(() => {
+    return categories.flatMap((category) =>
+      (category.tables || []).map((table) => ({
+        ...table,
+        categoryId: category.id,
+        categoryName: category.name,
+      }))
+    );
+  }, [categories]);
 
   const availableLinkFields = useMemo(() => {
     const linkedCategory = categories.find(
       (cat) => cat.id === fieldForm.linkCategoryId
     );
-    return linkedCategory?.table?.fields || [];
+    const linkedTable = linkedCategory?.tables?.[0];
+    return linkedTable?.fields || [];
   }, [categories, fieldForm.linkCategoryId]);
 
-  const availableFormulaFields = useMemo(() => {
-    return (
-      selectedTable?.fields.filter(
-        (field) => field.type === "number" || field.type === "formula"
-      ) || []
-    );
+  const formulaTableOptions = useMemo(() => {
+    return allTables.map((table) => ({
+      id: table.id,
+      label: `${table.categoryName} / ${table.name}`,
+    }));
+  }, [allTables]);
+
+  function getFormulaFieldsForTable(tableId, excludeEditingField = true) {
+    const table = allTables.find((item) => item.id === tableId);
+    if (!table) return [];
+
+    return (table.fields || []).filter((field) => {
+      if (field.type !== "number" && field.type !== "formula") return false;
+      if (
+        excludeEditingField &&
+        tableId === selectedTableId &&
+        field.id === editingFieldId
+      ) {
+        return false;
+      }
+      return true;
+    });
+  }
+
+  const selectedSheetQuickSummary = useMemo(() => {
+    if (!selectedCategory || !sheetQuickField) return null;
+
+    for (const table of selectedCategory.tables || []) {
+      const firstRow = table.rows?.[0];
+      if (!firstRow) continue;
+
+      const field = (table.fields || []).find((item) => item.name === sheetQuickField);
+      if (!field) continue;
+
+      let value = "-";
+      if (field.type === "formula") {
+        value = getFormulaValue(firstRow, field, table);
+      } else {
+        value = firstRow.values?.[field.name] || "-";
+      }
+
+      return {
+        field: sheetQuickField,
+        value,
+      };
+    }
+
+    return {
+      field: sheetQuickField,
+      value: "-",
+    };
+  }, [selectedCategory, sheetQuickField, allTables]);
+
+  const selectedTableQuickSummary = useMemo(() => {
+    if (!selectedTable || !tableQuickField) return null;
+
+    const firstRow = selectedTable.rows?.[0];
+    const field = (selectedTable.fields || []).find((item) => item.name === tableQuickField);
+
+    if (!field) {
+      return {
+        field: tableQuickField,
+        value: "-",
+      };
+    }
+
+    if (!firstRow) {
+      return {
+        field: tableQuickField,
+        value: "-",
+      };
+    }
+
+    const value =
+      field.type === "formula"
+        ? getFormulaValue(firstRow, field, selectedTable)
+        : firstRow.values?.[field.name] || "-";
+
+    return {
+      field: tableQuickField,
+      value,
+    };
+  }, [selectedTable, tableQuickField, allTables]);
+
+  const sheetQuickFieldOptions = useMemo(() => {
+    if (!selectedCategory) return [];
+    const names = new Set();
+
+    (selectedCategory.tables || []).forEach((table) => {
+      (table.fields || []).forEach((field) => {
+        names.add(field.name);
+      });
+    });
+
+    return Array.from(names);
+  }, [selectedCategory]);
+
+  const tableQuickFieldOptions = useMemo(() => {
+    if (!selectedTable) return [];
+    return (selectedTable.fields || []).map((field) => field.name);
   }, [selectedTable]);
 
   useEffect(() => {
@@ -125,19 +300,106 @@ export default function App() {
       !categories.some((category) => category.id === selectedCategoryId)
     ) {
       setSelectedCategoryId(categories[0]?.id || null);
+      setSelectedTableId(categories[0]?.tables?.[0]?.id || null);
     }
   }, [categories, selectedCategoryId]);
 
+  useEffect(() => {
+    if (!selectedCategory) {
+      setSelectedTableId(null);
+      return;
+    }
+
+    const hasSelectedTable = selectedCategory.tables?.some(
+      (table) => table.id === selectedTableId
+    );
+
+    if (!hasSelectedTable) {
+      setSelectedTableId(selectedCategory.tables?.[0]?.id || null);
+    }
+  }, [selectedCategory, selectedTableId]);
+
+  useEffect(() => {
+    if (!sheetQuickFieldOptions.includes(sheetQuickField)) {
+      setSheetQuickField(sheetQuickFieldOptions[0] || "");
+    }
+  }, [sheetQuickFieldOptions, sheetQuickField]);
+
+  useEffect(() => {
+    if (!tableQuickFieldOptions.includes(tableQuickField)) {
+      setTableQuickField(tableQuickFieldOptions[0] || "");
+    }
+  }, [tableQuickFieldOptions, tableQuickField]);
+
+  function sanitizeField(field) {
+    const cleanField = {
+      id: field.id,
+      name: field.name,
+      type: field.type,
+    };
+
+    if (field.type === "link") {
+      cleanField.linkCategoryId = field.linkCategoryId || "";
+      cleanField.linkFieldName = field.linkFieldName || "";
+    }
+
+    if (field.type === "formula") {
+      cleanField.formulaParts = (field.formulaParts || []).map((part) => ({
+        id: part.id || uid(),
+        tableId: part.tableId || "",
+        fieldName: part.fieldName || "",
+        operator: part.operator || "",
+      }));
+      cleanField.formula = field.formula || "";
+      cleanField.roundResult = Boolean(field.roundResult);
+    }
+
+    return cleanField;
+  }
+
+  function sanitizeTable(table) {
+    return {
+      id: table.id,
+      name: table.name,
+      fields: (table.fields || []).map(sanitizeField),
+      rows: (table.rows || []).map((row) => ({
+        id: row.id,
+        values: Object.fromEntries(
+          Object.entries(row.values || {}).map(([key, value]) => [key, value ?? ""])
+        ),
+      })),
+    };
+  }
+
+  function sanitizeDataForFirestore(nextData) {
+    return {
+      categories: (nextData.categories || []).map((category) => ({
+        id: category.id,
+        name: category.name,
+        tables: (category.tables || []).map(sanitizeTable),
+      })),
+    };
+  }
+
   async function saveData(nextData) {
     setSaving(true);
+
     try {
-      await setDoc(appDocRef, {
-        categories: nextData.categories,
-        updatedAt: serverTimestamp(),
-      });
+      const cleanData = sanitizeDataForFirestore(nextData);
+
+      await setDoc(
+        appDocRef,
+        {
+          categories: cleanData.categories,
+          updatedAt: serverTimestamp(),
+        },
+        { merge: true }
+      );
+
+      setData(cleanData);
     } catch (error) {
-      console.error("Save failed:", error);
-      alert("Could not save data to Firebase.");
+      console.error("Firestore save failed:", error);
+      alert(`Save failed: ${error.message}`);
     } finally {
       setSaving(false);
     }
@@ -169,14 +431,22 @@ export default function App() {
       type: "text",
       linkCategoryId: "",
       linkFieldName: "",
-      formulaParts: [createFormulaPart("", "+"), createFormulaPart("", "")],
+      roundResult: false,
+      formulaParts: [
+        createFormulaPart(selectedTableId || "", "", "+"),
+        createFormulaPart(selectedTableId || "", "", ""),
+      ],
     });
+    setEditingFieldId(null);
   }
 
   function addFormulaPart() {
     setFieldForm((prev) => ({
       ...prev,
-      formulaParts: [...prev.formulaParts, createFormulaPart("", "")],
+      formulaParts: [
+        ...prev.formulaParts,
+        createFormulaPart(selectedTableId || "", "", ""),
+      ],
     }));
   }
 
@@ -193,26 +463,113 @@ export default function App() {
   function updateFormulaPart(partId, key, value) {
     setFieldForm((prev) => ({
       ...prev,
-      formulaParts: prev.formulaParts.map((part) =>
-        part.id === partId ? { ...part, [key]: value } : part
-      ),
+      formulaParts: prev.formulaParts.map((part) => {
+        if (part.id !== partId) return part;
+
+        if (key === "tableId") {
+          return {
+            ...part,
+            tableId: value,
+            fieldName: "",
+          };
+        }
+
+        return { ...part, [key]: value };
+      }),
     }));
   }
 
   function buildFormulaText(parts) {
     return parts
       .map((part, index) => {
-        if (index === parts.length - 1) return part.fieldName || "";
-        return `${part.fieldName || ""} ${part.operator || ""}`.trim();
+        const tableName =
+          allTables.find((table) => table.id === part.tableId)?.name || "Table";
+        const token = `${tableName}.${part.fieldName || ""}`.trim();
+
+        if (index === parts.length - 1) return token;
+        return `${token} ${part.operator || ""}`.trim();
       })
       .join(" ")
       .trim();
+  }
+
+  function getNumberInputProps(value, onChange) {
+    return {
+      type: "number",
+      step: "0.01",
+      inputMode: "decimal",
+      value: value ?? "",
+      onChange: (e) => onChange(e.target.value),
+    };
   }
 
   const formulaPreview =
     fieldForm.type === "formula" && fieldForm.name
       ? `${buildFormulaText(fieldForm.formulaParts)} = ${fieldForm.name}`
       : "";
+
+  function toggleTableExpanded(tableId) {
+    setExpandedTableIds((prev) =>
+      prev.includes(tableId)
+        ? prev.filter((id) => id !== tableId)
+        : [...prev, tableId]
+    );
+  }
+
+  function openRenameTableDialog(table) {
+    setEditingTableId(table.id);
+    setRenameTableForm({ name: table.name || "" });
+    openDialog(renameTableDialogRef);
+  }
+
+  function openRenameSheetDialog(sheet) {
+    setEditingSheetId(sheet.id);
+    setRenameSheetForm({ name: sheet.name || "" });
+    openDialog(renameSheetDialogRef);
+  }
+
+  async function saveSheetRename() {
+    if (!editingSheetId) return;
+    const name = renameSheetForm.name.trim();
+    if (!name) return;
+
+    const nextData = {
+      ...data,
+      categories: data.categories.map((cat) =>
+        cat.id === editingSheetId ? { ...cat, name } : cat
+      ),
+    };
+
+    await saveData(nextData);
+    setEditingSheetId(null);
+    setRenameSheetForm({ name: "" });
+    closeDialog(renameSheetDialogRef);
+  }
+
+  async function saveTableRename() {
+    if (!selectedCategory || !editingTableId) return;
+    const name = renameTableForm.name.trim();
+    if (!name) return;
+
+    const nextData = {
+      ...data,
+      categories: data.categories.map((cat) =>
+        cat.id === selectedCategory.id
+          ? {
+              ...cat,
+              tables: cat.tables.map((table) =>
+                table.id === editingTableId ? { ...table, name } : table
+              ),
+            }
+          : cat
+      ),
+    };
+
+    await saveData(nextData);
+    setEditingTableId(null);
+    setRenameTableForm({ name: "" });
+    closeDialog(renameTableDialogRef);
+  }
 
   async function addSheet() {
     const name = sheetForm.name.trim();
@@ -221,7 +578,7 @@ export default function App() {
     const newSheet = {
       id: uid(),
       name,
-      table: null,
+      tables: [],
     };
 
     const nextData = {
@@ -231,8 +588,26 @@ export default function App() {
 
     await saveData(nextData);
     setSelectedCategoryId(newSheet.id);
+    setSelectedTableId(null);
     setSheetForm({ name: "" });
     closeDialog(sheetDialogRef);
+  }
+
+  async function copySheet(sheet) {
+    const copiedSheet = deepCopySheet(sheet);
+
+    const nextData = {
+      ...data,
+      categories: [...data.categories, copiedSheet],
+    };
+
+    await saveData(nextData);
+    setSelectedCategoryId(copiedSheet.id);
+    setSelectedTableId(copiedSheet.tables?.[0]?.id || null);
+    setExpandedTableIds((prev) => [
+      ...prev,
+      ...(copiedSheet.tables || []).map((table) => table.id),
+    ]);
   }
 
   async function addTable() {
@@ -254,33 +629,23 @@ export default function App() {
         cat.id === selectedCategory.id
           ? {
               ...cat,
-              table: newTable,
+              tables: [...(cat.tables || []), newTable],
             }
           : cat
       ),
     };
 
     await saveData(nextData);
+    setSelectedTableId(newTable.id);
+    setExpandedTableIds((prev) => [...new Set([...prev, newTable.id])]);
     setTableForm({ name: "" });
     closeDialog(tableDialogRef);
   }
 
-  async function copyTable() {
-    if (!selectedCategory || !selectedTable) return;
+  async function copyTable(table) {
+    if (!selectedCategory || !table) return;
 
-    const copiedTable = {
-      ...selectedTable,
-      id: uid(),
-      name: `${selectedTable.name} Copy`,
-      fields: selectedTable.fields.map((field) => ({
-        ...field,
-        id: uid(),
-        formulaParts: field.formulaParts
-          ? field.formulaParts.map((part) => ({ ...part, id: uid() }))
-          : undefined,
-      })),
-      rows: [],
-    };
+    const copiedTable = deepCopyTable(table);
 
     const nextData = {
       ...data,
@@ -288,63 +653,188 @@ export default function App() {
         cat.id === selectedCategory.id
           ? {
               ...cat,
-              table: copiedTable,
+              tables: [...(cat.tables || []), copiedTable],
             }
           : cat
       ),
     };
 
     await saveData(nextData);
+    setSelectedTableId(copiedTable.id);
+    setExpandedTableIds((prev) => [...new Set([...prev, copiedTable.id])]);
   }
 
-  async function addField() {
+  async function deleteTable(tableId) {
+    if (!selectedCategory) return;
+
+    const remainingTables = selectedCategory.tables.filter((table) => table.id !== tableId);
+
+    const nextData = {
+      ...data,
+      categories: data.categories.map((cat) =>
+        cat.id === selectedCategory.id
+          ? {
+              ...cat,
+              tables: cat.tables.filter((table) => table.id !== tableId),
+            }
+          : cat
+      ),
+    };
+
+    await saveData(nextData);
+    setExpandedTableIds((prev) => prev.filter((id) => id !== tableId));
+    setSelectedTableId(remainingTables[0]?.id || null);
+  }
+
+  function requestDeleteTable(tableId, tableName) {
+    openConfirmDialog(
+      "Delete Table",
+      `Are you sure you want to delete table "${tableName}"?`,
+      async () => {
+        await deleteTable(tableId);
+      }
+    );
+  }
+
+  function openAddFieldDialog() {
+    resetFieldForm();
+    openDialog(fieldDialogRef);
+  }
+
+  function openEditFieldDialog(field) {
+    setEditingFieldId(field.id);
+    setFieldForm({
+      name: field.name || "",
+      type: field.type || "text",
+      linkCategoryId: field.linkCategoryId || "",
+      linkFieldName: field.linkFieldName || "",
+      roundResult: Boolean(field.roundResult),
+      formulaParts:
+        field.formulaParts?.length > 0
+          ? field.formulaParts.map((part, index, arr) => ({
+              id: uid(),
+              tableId: part.tableId || selectedTableId || "",
+              fieldName: part.fieldName || "",
+              operator: index === arr.length - 1 ? "" : part.operator || "+",
+            }))
+          : [
+              createFormulaPart(selectedTableId || "", "", "+"),
+              createFormulaPart(selectedTableId || "", "", ""),
+            ],
+    });
+    openDialog(fieldDialogRef);
+  }
+
+  async function saveField() {
     if (!selectedCategory || !selectedTable) return;
 
     const name = fieldForm.name.trim();
     if (!name) return;
 
-    const newField = {
-      id: uid(),
+    const existingField = selectedTable.fields.find((f) => f.id === editingFieldId);
+    const oldName = existingField?.name;
+
+    const preparedField = {
+      id: editingFieldId || uid(),
       name,
       type: fieldForm.type,
     };
 
     if (fieldForm.type === "formula") {
-      const validParts = fieldForm.formulaParts.filter((part) => part.fieldName);
+      const validParts = fieldForm.formulaParts.filter(
+        (part) => part.tableId && part.fieldName
+      );
       if (validParts.length < 2) return;
 
-      newField.formulaParts = validParts.map((part, index) => ({
+      preparedField.formulaParts = validParts.map((part, index) => ({
         id: uid(),
+        tableId: part.tableId,
         fieldName: part.fieldName,
         operator: index === validParts.length - 1 ? "" : part.operator || "+",
       }));
 
-      newField.formula = buildFormulaText(newField.formulaParts);
+      preparedField.formula = buildFormulaText(preparedField.formulaParts);
+      preparedField.roundResult = Boolean(fieldForm.roundResult);
     }
 
     if (fieldForm.type === "link") {
       if (!fieldForm.linkCategoryId || !fieldForm.linkFieldName) return;
-      newField.linkCategoryId = fieldForm.linkCategoryId;
-      newField.linkFieldName = fieldForm.linkFieldName;
+      preparedField.linkCategoryId = fieldForm.linkCategoryId;
+      preparedField.linkFieldName = fieldForm.linkFieldName;
     }
 
     const nextData = {
       ...data,
-      categories: data.categories.map((cat) =>
-        cat.id === selectedCategory.id
-          ? {
-              ...cat,
-              table: {
-                ...cat.table,
-                fields: [...cat.table.fields, newField],
-                rows: cat.table.rows.map((row) => ({
-                  ...row,
-                  values: { ...row.values, [name]: "" },
-                })),
-              },
-            }
-          : cat
-      ),
+      categories: data.categories.map((cat) => {
+        if (cat.id !== selectedCategory.id) return cat;
+
+        return {
+          ...cat,
+          tables: cat.tables.map((table) => {
+            if (table.id !== selectedTable.id) return table;
+
+            const updatedFields = editingFieldId
+              ? table.fields.map((fieldItem) =>
+                  fieldItem.id === editingFieldId ? preparedField : fieldItem
+                )
+              : [...table.fields, preparedField];
+
+            const updatedRows = table.rows.map((row) => {
+              const nextValues = { ...row.values };
+
+              if (editingFieldId) {
+                if (oldName && oldName !== name) {
+                  nextValues[name] = nextValues[oldName] ?? "";
+                  delete nextValues[oldName];
+                } else if (!(name in nextValues)) {
+                  nextValues[name] = "";
+                }
+              } else {
+                nextValues[name] = "";
+              }
+
+              if (preparedField.type === "formula") {
+                delete nextValues[name];
+              }
+
+              return {
+                ...row,
+                values: nextValues,
+              };
+            });
+
+            const normalizedRows = updatedRows.map((row) => {
+              const nextValues = { ...row.values };
+
+              updatedFields.forEach((fieldItem) => {
+                if (fieldItem.type !== "formula" && !(fieldItem.name in nextValues)) {
+                  nextValues[fieldItem.name] = "";
+                }
+              });
+
+              Object.keys(nextValues).forEach((key) => {
+                const stillExists = updatedFields.some(
+                  (fieldItem) => fieldItem.name === key && fieldItem.type !== "formula"
+                );
+                if (!stillExists) {
+                  delete nextValues[key];
+                }
+              });
+
+              return {
+                ...row,
+                values: nextValues,
+              };
+            });
+
+            return {
+              ...table,
+              fields: updatedFields,
+              rows: normalizedRows,
+            };
+          }),
+        };
+      }),
     };
 
     await saveData(nextData);
@@ -380,10 +870,14 @@ export default function App() {
         cat.id === selectedCategory.id
           ? {
               ...cat,
-              table: {
-                ...cat.table,
-                rows: [...cat.table.rows, newRow],
-              },
+              tables: cat.tables.map((table) =>
+                table.id === selectedTable.id
+                  ? {
+                      ...table,
+                      rows: [...table.rows, newRow],
+                    }
+                  : table
+              ),
             }
           : cat
       ),
@@ -403,20 +897,24 @@ export default function App() {
         cat.id === selectedCategory.id
           ? {
               ...cat,
-              table: {
-                ...cat.table,
-                rows: cat.table.rows.map((row) =>
-                  row.id === rowId
-                    ? {
-                        ...row,
-                        values: {
-                          ...row.values,
-                          [fieldName]: value,
-                        },
-                      }
-                    : row
-                ),
-              },
+              tables: cat.tables.map((table) =>
+                table.id === selectedTable.id
+                  ? {
+                      ...table,
+                      rows: table.rows.map((row) =>
+                        row.id === rowId
+                          ? {
+                              ...row,
+                              values: {
+                                ...row.values,
+                                [fieldName]: value,
+                              },
+                            }
+                          : row
+                      ),
+                    }
+                  : table
+              ),
             }
           : cat
       ),
@@ -429,30 +927,41 @@ export default function App() {
     return categories.find((cat) => cat.id === categoryId);
   }
 
-  function evaluateFormulaField(row, field, visited = new Set()) {
+  function getTableById(tableId) {
+    return allTables.find((table) => table.id === tableId);
+  }
+
+  function evaluateFormulaField(row, field, tableContext, visited = new Set()) {
     if (!field) return 0;
-    if (visited.has(field.name)) return 0;
-    visited.add(field.name);
+
+    const visitKey = `${tableContext?.id || "table"}::${field.name}`;
+    if (visited.has(visitKey)) return 0;
+    visited.add(visitKey);
 
     if (field.type === "number") {
-      return Number(row.values[field.name] || 0);
+      return Number(row?.values?.[field.name] || 0);
     }
 
     if (field.type === "formula" && field.formulaParts?.length) {
       let total = 0;
 
       field.formulaParts.forEach((part, index) => {
-        const dependentField = selectedTable?.fields.find(
-          (f) => f.name === part.fieldName
-        );
+        const sourceTable = getTableById(part.tableId || tableContext?.id);
+        const sourceField = sourceTable?.fields?.find((f) => f.name === part.fieldName);
+        const sourceRow = sourceTable?.rows?.[0] || row;
 
         let partValue = 0;
 
-        if (dependentField) {
-          if (dependentField.type === "formula") {
-            partValue = evaluateFormulaField(row, dependentField, new Set(visited));
+        if (sourceField) {
+          if (sourceField.type === "formula") {
+            partValue = evaluateFormulaField(
+              sourceRow,
+              sourceField,
+              sourceTable,
+              new Set(visited)
+            );
           } else {
-            partValue = Number(row.values[dependentField.name] || 0);
+            partValue = Number(sourceRow?.values?.[sourceField.name] || 0);
           }
         }
 
@@ -463,7 +972,9 @@ export default function App() {
           if (previousOperator === "+") total += partValue;
           if (previousOperator === "-") total -= partValue;
           if (previousOperator === "*") total *= partValue;
-          if (previousOperator === "/") total = partValue === 0 ? 0 : total / partValue;
+          if (previousOperator === "/") {
+            total = partValue === 0 ? 0 : total / partValue;
+          }
         }
       });
 
@@ -473,11 +984,16 @@ export default function App() {
     return 0;
   }
 
-  function getFormulaValue(row, field) {
-    if (field.formulaParts?.length) {
-      return evaluateFormulaField(row, field);
+  function getFormulaValue(row, field, tableContext = selectedTable) {
+    if (!field?.formulaParts?.length) return "";
+
+    const result = evaluateFormulaField(row, field, tableContext);
+
+    if (field.roundResult) {
+      return Number(result).toFixed(2);
     }
-    return "";
+
+    return Number.isFinite(result) ? result : "";
   }
 
   function getLinkedDisplayValue(row, field) {
@@ -486,9 +1002,10 @@ export default function App() {
 
     const [categoryId, rowId] = String(linkValue).split(":");
     const linkedCategory = getCategoryById(categoryId);
-    if (!linkedCategory?.table) return "";
+    const linkedTable = linkedCategory?.tables?.[0];
+    if (!linkedTable) return "";
 
-    const linkedRow = linkedCategory.table.rows.find((r) => r.id === rowId);
+    const linkedRow = linkedTable.rows.find((r) => r.id === rowId);
     if (!linkedRow) return "";
 
     return linkedRow.values[field.linkFieldName] || "";
@@ -496,53 +1013,15 @@ export default function App() {
 
   function getLinkOptions(field) {
     const linkedCategory = getCategoryById(field.linkCategoryId);
-    if (!linkedCategory?.table) return [];
+    const linkedTable = linkedCategory?.tables?.[0];
+    if (!linkedTable) return [];
 
-    const labelField =
-      field.linkFieldName ||
-      linkedCategory.table.fields[0]?.name ||
-      "Name";
+    const labelField = field.linkFieldName || linkedTable.fields[0]?.name || "Name";
 
-    return linkedCategory.table.rows.map((row) => ({
+    return linkedTable.rows.map((row) => ({
       value: `${linkedCategory.id}:${row.id}`,
       label: row.values[labelField] || "(blank)",
     }));
-  }
-
-  function exportJson() {
-    const blob = new Blob([JSON.stringify(data, null, 2)], {
-      type: "application/json",
-    });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = "waterloo-account-data.json";
-    a.click();
-    URL.revokeObjectURL(url);
-  }
-
-  function importJson(event) {
-    const file = event.target.files?.[0];
-    if (!file) return;
-
-    const reader = new FileReader();
-    reader.onload = async (e) => {
-      try {
-        const imported = JSON.parse(e.target.result);
-        const nextData = {
-          categories: imported.categories || [],
-        };
-        await saveData(nextData);
-        setSelectedCategoryId(nextData.categories?.[0]?.id || null);
-      } catch {
-        openConfirmDialog(
-          "Import Error",
-          "The selected file is not valid JSON.",
-          null
-        );
-      }
-    };
-    reader.readAsText(file);
   }
 
   function requestDeleteSheet(sheetId) {
@@ -559,6 +1038,7 @@ export default function App() {
 
         await saveData(nextData);
         setSelectedCategoryId(remaining[0]?.id || null);
+        setSelectedTableId(remaining[0]?.tables?.[0]?.id || null);
       }
     );
   }
@@ -574,15 +1054,19 @@ export default function App() {
             cat.id === selectedCategory.id
               ? {
                   ...cat,
-                  table: {
-                    ...cat.table,
-                    fields: cat.table.fields.filter((field) => field.name !== fieldName),
-                    rows: cat.table.rows.map((row) => {
-                      const nextValues = { ...row.values };
-                      delete nextValues[fieldName];
-                      return { ...row, values: nextValues };
-                    }),
-                  },
+                  tables: cat.tables.map((table) =>
+                    table.id === selectedTable.id
+                      ? {
+                          ...table,
+                          fields: table.fields.filter((field) => field.name !== fieldName),
+                          rows: table.rows.map((row) => {
+                            const nextValues = { ...row.values };
+                            delete nextValues[fieldName];
+                            return { ...row, values: nextValues };
+                          }),
+                        }
+                      : table
+                  ),
                 }
               : cat
           ),
@@ -601,10 +1085,14 @@ export default function App() {
           cat.id === selectedCategory.id
             ? {
                 ...cat,
-                table: {
-                  ...cat.table,
-                  rows: cat.table.rows.filter((row) => row.id !== rowId),
-                },
+                tables: cat.tables.map((table) =>
+                  table.id === selectedTable.id
+                    ? {
+                        ...table,
+                        rows: table.rows.filter((row) => row.id !== rowId),
+                      }
+                    : table
+                ),
               }
             : cat
         ),
@@ -621,6 +1109,8 @@ export default function App() {
       async () => {
         await saveData(emptyData);
         setSelectedCategoryId(null);
+        setSelectedTableId(null);
+        setExpandedTableIds([]);
       }
     );
   }
@@ -663,17 +1153,37 @@ export default function App() {
               >
                 <button
                   className="sheet-btn"
-                  onClick={() => setSelectedCategoryId(category.id)}
+                  onClick={() => {
+                    setSelectedCategoryId(category.id);
+                    setSelectedTableId(category.tables?.[0]?.id || null);
+                  }}
                 >
                   {category.name}
                 </button>
-                <button
-                  className="delete-mini"
-                  type="button"
-                  onClick={() => requestDeleteSheet(category.id)}
-                >
-                  ×
-                </button>
+
+                <div className="field-pill-buttons">
+                  <button
+                    type="button"
+                    className="field-mini-btn"
+                    onClick={() => openRenameSheetDialog(category)}
+                  >
+                    Edit
+                  </button>
+                  <button
+                    type="button"
+                    className="field-mini-btn"
+                    onClick={() => copySheet(category)}
+                  >
+                    Copy
+                  </button>
+                  <button
+                    className="delete-mini"
+                    type="button"
+                    onClick={() => requestDeleteSheet(category.id)}
+                  >
+                    ×
+                  </button>
+                </div>
               </div>
             ))}
           </div>
@@ -688,21 +1198,312 @@ export default function App() {
           ) : (
             <>
               <header className="topbar">
-                <div>
-                  <p className="eyebrow">Sheet</p>
-                  <h2>{selectedCategory.name}</h2>
-                </div>
+                <div className="topbar-main">
+                  <div>
+                    <p className="eyebrow">Sheet</p>
+                    <h2>{selectedCategory.name}</h2>
+                  </div>
 
-                <div className="topbar-actions">
-                  <button onClick={exportJson}>Export JSON</button>
-                  <label className="import-btn">
-                    Import JSON
-                    <input type="file" accept=".json" onChange={importJson} hidden />
-                  </label>
+                  <div className="summary-tools">
+                    <div className="summary-config">
+                      <label>Sheet quick field</label>
+                      <select
+                        value={sheetQuickField}
+                        onChange={(e) => setSheetQuickField(e.target.value)}
+                      >
+                        <option value="">None</option>
+                        {sheetQuickFieldOptions.map((fieldName) => (
+                          <option key={fieldName} value={fieldName}>
+                            {fieldName}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+
+                    {selectedSheetQuickSummary && (
+                      <div className="header-summary-pill">
+                        <span>{selectedSheetQuickSummary.field}</span>
+                        <strong>{selectedSheetQuickSummary.value}</strong>
+                      </div>
+                    )}
+
+                    <button onClick={() => openDialog(tableDialogRef)}>Add Table</button>
+                  </div>
                 </div>
               </header>
 
-              {!selectedTable ? (
+              {selectedCategory.tables?.length > 0 && (
+                <section className="table-accordion-list">
+                  {selectedCategory.tables.map((table) => {
+                    const isExpanded = expandedTableIds.includes(table.id);
+                    const isSelected = selectedTableId === table.id;
+                    const firstRow = table.rows?.[0];
+                    const quickField = (table.fields || []).find(
+                      (field) => field.name === tableQuickField
+                    );
+
+                    let quickValue = "-";
+                    if (quickField && firstRow) {
+                      quickValue =
+                        quickField.type === "formula"
+                          ? getFormulaValue(firstRow, quickField, table)
+                          : firstRow.values?.[quickField.name] || "-";
+                    }
+
+                    return (
+                      <div
+                        key={table.id}
+                        className={`table-accordion-item ${
+                          isSelected ? "active-table-accordion" : ""
+                        }`}
+                      >
+                        <div className="table-accordion-header">
+                          <button
+                            type="button"
+                            className="table-accordion-toggle"
+                            onClick={() => {
+                              setSelectedTableId(table.id);
+                              toggleTableExpanded(table.id);
+                            }}
+                          >
+                            <span>{isExpanded ? "▾" : "▸"}</span>
+
+                            <div className="table-title-stack">
+                              <span className="table-title-text">{table.name}</span>
+                              {tableQuickField && (
+                                <small className="table-inline-summary">
+                                  {tableQuickField}: {quickValue}
+                                </small>
+                              )}
+                            </div>
+                          </button>
+
+                          <div className="field-pill-buttons">
+                            <button
+                              type="button"
+                              className="field-mini-btn"
+                              onClick={() => {
+                                setSelectedTableId(table.id);
+                                openRenameTableDialog(table);
+                              }}
+                            >
+                              Edit
+                            </button>
+                            <button
+                              type="button"
+                              className="field-mini-btn"
+                              onClick={() => {
+                                setSelectedTableId(table.id);
+                                copyTable(table);
+                              }}
+                            >
+                              Copy
+                            </button>
+                            <button
+                              type="button"
+                              className="delete-mini"
+                              onClick={() =>
+                                requestDeleteTable(table.id, table.name)
+                              }
+                            >
+                              ×
+                            </button>
+                          </div>
+                        </div>
+
+                        {isExpanded && (
+                          <div className="table-accordion-body">
+                            <div className="table-toolbar">
+                              <div className="summary-config">
+                                <label>Table quick field</label>
+                                <select
+                                  value={tableQuickField}
+                                  onChange={(e) => setTableQuickField(e.target.value)}
+                                >
+                                  <option value="">None</option>
+                                  {tableQuickFieldOptions.map((fieldName) => (
+                                    <option key={fieldName} value={fieldName}>
+                                      {fieldName}
+                                    </option>
+                                  ))}
+                                </select>
+                              </div>
+
+                              <div className="topbar-actions">
+                                <button
+                                  onClick={() => {
+                                    setSelectedTableId(table.id);
+                                    openAddFieldDialog();
+                                  }}
+                                >
+                                  Add Field
+                                </button>
+                                <button
+                                  onClick={() => {
+                                    setSelectedTableId(table.id);
+                                    openAddRowDialog();
+                                  }}
+                                >
+                                  Add Row
+                                </button>
+                              </div>
+                            </div>
+
+                            <div className="info-grid">
+                              <div className="info-card">
+                                <span>Fields</span>
+                                <strong>{table.fields.length}</strong>
+                              </div>
+                              <div className="info-card">
+                                <span>Rows</span>
+                                <strong>{table.rows.length}</strong>
+                              </div>
+                              <div className="info-card">
+                                <span>Quick value</span>
+                                <strong>{tableQuickField ? quickValue : "-"}</strong>
+                              </div>
+                            </div>
+
+                            <section className="field-strip">
+                              {table.fields.map((field) => (
+                                <div key={field.id} className="field-pill field-pill-actions">
+                                  <span>
+                                    {field.name} ({field.type})
+                                  </span>
+                                  <div className="field-pill-buttons">
+                                    <button
+                                      type="button"
+                                      className="field-mini-btn"
+                                      onClick={() => {
+                                        setSelectedTableId(table.id);
+                                        openEditFieldDialog(field);
+                                      }}
+                                    >
+                                      Edit
+                                    </button>
+                                    <button
+                                      type="button"
+                                      onClick={() => {
+                                        setSelectedTableId(table.id);
+                                        requestDeleteField(field.name);
+                                      }}
+                                    >
+                                      ×
+                                    </button>
+                                  </div>
+                                </div>
+                              ))}
+                            </section>
+
+                            <section className="table-wrap">
+                              <table>
+                                <thead>
+                                  <tr>
+                                    {table.fields.map((field) => (
+                                      <th key={field.id}>{field.name}</th>
+                                    ))}
+                                    <th>Actions</th>
+                                  </tr>
+                                </thead>
+                                <tbody>
+                                  {table.rows.length === 0 ? (
+                                    <tr>
+                                      <td colSpan={table.fields.length + 1}>
+                                        <div className="empty-inline">
+                                          No rows yet. Click Add Row.
+                                        </div>
+                                      </td>
+                                    </tr>
+                                  ) : (
+                                    table.rows.map((row) => (
+                                      <tr key={row.id}>
+                                        {table.fields.map((field) => (
+                                          <td key={field.id}>
+                                            {field.type === "formula" ? (
+                                              <div className="formula-cell">
+                                                {getFormulaValue(row, field, table)}
+                                              </div>
+                                            ) : field.type === "link" ? (
+                                              <div className="link-cell">
+                                                <select
+                                                  value={row.values[field.name] || ""}
+                                                  onChange={(e) => {
+                                                    setSelectedTableId(table.id);
+                                                    updateCell(
+                                                      row.id,
+                                                      field.name,
+                                                      e.target.value
+                                                    );
+                                                  }}
+                                                >
+                                                  <option value="">Select linked row</option>
+                                                  {getLinkOptions(field).map((option) => (
+                                                    <option
+                                                      key={option.value}
+                                                      value={option.value}
+                                                    >
+                                                      {option.label}
+                                                    </option>
+                                                  ))}
+                                                </select>
+                                                <small>
+                                                  Showing:{" "}
+                                                  {getLinkedDisplayValue(row, field) || "-"}
+                                                </small>
+                                              </div>
+                                            ) : field.type === "number" ? (
+                                              <input
+                                                {...getNumberInputProps(
+                                                  row.values[field.name],
+                                                  (value) => {
+                                                    setSelectedTableId(table.id);
+                                                    updateCell(row.id, field.name, value);
+                                                  }
+                                                )}
+                                              />
+                                            ) : (
+                                              <input
+                                                type="text"
+                                                value={row.values[field.name] || ""}
+                                                onChange={(e) => {
+                                                  setSelectedTableId(table.id);
+                                                  updateCell(
+                                                    row.id,
+                                                    field.name,
+                                                    e.target.value
+                                                  );
+                                                }}
+                                              />
+                                            )}
+                                          </td>
+                                        ))}
+                                        <td>
+                                          <button
+                                            className="danger-text"
+                                            type="button"
+                                            onClick={() => {
+                                              setSelectedTableId(table.id);
+                                              requestDeleteRow(row.id);
+                                            }}
+                                          >
+                                            Delete
+                                          </button>
+                                        </td>
+                                      </tr>
+                                    ))
+                                  )}
+                                </tbody>
+                              </table>
+                            </section>
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                </section>
+              )}
+
+              {selectedCategory.tables?.length === 0 && (
                 <section className="empty-state">
                   <h3>No table yet</h3>
                   <p>Create a table under this sheet first.</p>
@@ -712,136 +1513,6 @@ export default function App() {
                     </button>
                   </div>
                 </section>
-              ) : (
-                <>
-                  <section className="table-header-card">
-                    <div>
-                      <p className="eyebrow">Table</p>
-                      <h3>{selectedTable.name}</h3>
-                    </div>
-
-                    <div className="topbar-actions">
-                      <button onClick={copyTable}>Copy Table</button>
-                      <button onClick={() => openDialog(fieldDialogRef)}>
-                        Add Field
-                      </button>
-                      <button onClick={openAddRowDialog}>Add Row</button>
-                    </div>
-                  </section>
-
-                  <section className="info-grid">
-                    <div className="info-card">
-                      <span>Table name</span>
-                      <strong>{selectedTable.name}</strong>
-                    </div>
-                    <div className="info-card">
-                      <span>Fields</span>
-                      <strong>{selectedTable.fields.length}</strong>
-                    </div>
-                    <div className="info-card">
-                      <span>Rows</span>
-                      <strong>{selectedTable.rows.length}</strong>
-                    </div>
-                  </section>
-
-                  <section className="field-strip">
-                    {selectedTable.fields.map((field) => (
-                      <div key={field.id} className="field-pill">
-                        <span>
-                          {field.name} ({field.type})
-                        </span>
-                        <button
-                          type="button"
-                          onClick={() => requestDeleteField(field.name)}
-                        >
-                          ×
-                        </button>
-                      </div>
-                    ))}
-                  </section>
-
-                  <section className="table-wrap">
-                    <table>
-                      <thead>
-                        <tr>
-                          {selectedTable.fields.map((field) => (
-                            <th key={field.id}>{field.name}</th>
-                          ))}
-                          <th>Actions</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {selectedTable.rows.length === 0 ? (
-                          <tr>
-                            <td colSpan={selectedTable.fields.length + 1}>
-                              <div className="empty-inline">
-                                No rows yet. Click Add Row.
-                              </div>
-                            </td>
-                          </tr>
-                        ) : (
-                          selectedTable.rows.map((row) => (
-                            <tr key={row.id}>
-                              {selectedTable.fields.map((field) => (
-                                <td key={field.id}>
-                                  {field.type === "formula" ? (
-                                    <div className="formula-cell">
-                                      {getFormulaValue(row, field)}
-                                    </div>
-                                  ) : field.type === "link" ? (
-                                    <div className="link-cell">
-                                      <select
-                                        value={row.values[field.name] || ""}
-                                        onChange={(e) =>
-                                          updateCell(row.id, field.name, e.target.value)
-                                        }
-                                      >
-                                        <option value="">Select linked row</option>
-                                        {getLinkOptions(field).map((option) => (
-                                          <option key={option.value} value={option.value}>
-                                            {option.label}
-                                          </option>
-                                        ))}
-                                      </select>
-                                      <small>
-                                        Showing: {getLinkedDisplayValue(row, field) || "-"}
-                                      </small>
-                                    </div>
-                                  ) : field.type === "number" ? (
-                                    <input
-                                      type="number"
-                                      value={row.values[field.name] ?? ""}
-                                      onChange={(e) =>
-                                        updateCell(row.id, field.name, e.target.value)
-                                      }
-                                    />
-                                  ) : (
-                                    <input
-                                      type="text"
-                                      value={row.values[field.name] || ""}
-                                      onChange={(e) =>
-                                        updateCell(row.id, field.name, e.target.value)
-                                      }
-                                    />
-                                  )}
-                                </td>
-                              ))}
-                              <td>
-                                <button
-                                  className="danger-text"
-                                  type="button"
-                                  onClick={() => requestDeleteRow(row.id)}
-                                >
-                                  Delete
-                                </button>
-                              </td>
-                            </tr>
-                          ))
-                        )}
-                      </tbody>
-                    </table>
-                  </section>
-                </>
               )}
             </>
           )}
@@ -878,6 +1549,35 @@ export default function App() {
       </DialogBox>
 
       <DialogBox
+        dialogRef={renameSheetDialogRef}
+        title="Edit Sheet Name"
+        actions={
+          <>
+            <button
+              className="secondary-btn"
+              type="button"
+              onClick={() => closeDialog(renameSheetDialogRef)}
+            >
+              Cancel
+            </button>
+            <button type="button" onClick={saveSheetRename}>
+              Save
+            </button>
+          </>
+        }
+      >
+        <label className="field-block">
+          <span>Sheet name</span>
+          <input
+            type="text"
+            value={renameSheetForm.name}
+            onChange={(e) => setRenameSheetForm({ name: e.target.value })}
+            placeholder="Sheet name"
+          />
+        </label>
+      </DialogBox>
+
+      <DialogBox
         dialogRef={tableDialogRef}
         title="Create Table"
         actions={
@@ -907,8 +1607,37 @@ export default function App() {
       </DialogBox>
 
       <DialogBox
+        dialogRef={renameTableDialogRef}
+        title="Edit Table Name"
+        actions={
+          <>
+            <button
+              className="secondary-btn"
+              type="button"
+              onClick={() => closeDialog(renameTableDialogRef)}
+            >
+              Cancel
+            </button>
+            <button type="button" onClick={saveTableRename}>
+              Save
+            </button>
+          </>
+        }
+      >
+        <label className="field-block">
+          <span>Table name</span>
+          <input
+            type="text"
+            value={renameTableForm.name}
+            onChange={(e) => setRenameTableForm({ name: e.target.value })}
+            placeholder="Table name"
+          />
+        </label>
+      </DialogBox>
+
+      <DialogBox
         dialogRef={fieldDialogRef}
-        title="Add Field"
+        title={editingFieldId ? "Edit Field" : "Add Field"}
         actions={
           <>
             <button
@@ -921,8 +1650,8 @@ export default function App() {
             >
               Cancel
             </button>
-            <button type="button" onClick={addField}>
-              Save Field
+            <button type="button" onClick={saveField}>
+              {editingFieldId ? "Update Field" : "Save Field"}
             </button>
           </>
         }
@@ -950,7 +1679,11 @@ export default function App() {
                   type: e.target.value,
                   linkCategoryId: "",
                   linkFieldName: "",
-                  formulaParts: [createFormulaPart("", "+"), createFormulaPart("", "")],
+                  roundResult: false,
+                  formulaParts: [
+                    createFormulaPart(selectedTableId || "", "", "+"),
+                    createFormulaPart(selectedTableId || "", "", ""),
+                  ],
                 }))
               }
             >
@@ -963,57 +1696,96 @@ export default function App() {
 
           {fieldForm.type === "formula" && (
             <div className="formula-builder">
-              {fieldForm.formulaParts.map((part, index) => (
-                <div key={part.id} className="formula-row">
-                  <label className="field-block">
-                    <span>Field {index + 1}</span>
-                    <select
-                      value={part.fieldName}
-                      onChange={(e) =>
-                        updateFormulaPart(part.id, "fieldName", e.target.value)
-                      }
-                    >
-                      <option value="">Select field</option>
-                      {availableFormulaFields.map((field) => (
-                        <option key={field.id} value={field.name}>
-                          {field.name} ({field.type})
-                        </option>
-                      ))}
-                    </select>
-                  </label>
+              {fieldForm.formulaParts.map((part, index) => {
+                const tableFields = getFormulaFieldsForTable(part.tableId || selectedTableId);
 
-                  {index < fieldForm.formulaParts.length - 1 && (
-                    <label className="field-block formula-operator">
-                      <span>Operator</span>
+                return (
+                  <div key={part.id} className="formula-row formula-row-wide">
+                    <label className="field-block">
+                      <span>Source table</span>
                       <select
-                        value={part.operator}
+                        value={part.tableId}
                         onChange={(e) =>
-                          updateFormulaPart(part.id, "operator", e.target.value)
+                          updateFormulaPart(part.id, "tableId", e.target.value)
                         }
                       >
-                        <option value="+">+</option>
-                        <option value="-">-</option>
-                        <option value="*">*</option>
-                        <option value="/">/</option>
+                        <option value="">Select table</option>
+                        {formulaTableOptions.map((tableOption) => (
+                          <option key={tableOption.id} value={tableOption.id}>
+                            {tableOption.label}
+                          </option>
+                        ))}
                       </select>
                     </label>
-                  )}
 
-                  <button
-                    type="button"
-                    className="remove-part-btn"
-                    onClick={() => removeFormulaPart(part.id)}
-                  >
-                    Remove
-                  </button>
-                </div>
-              ))}
+                    <label className="field-block">
+                      <span>Field {index + 1}</span>
+                      <select
+                        value={part.fieldName}
+                        onChange={(e) =>
+                          updateFormulaPart(part.id, "fieldName", e.target.value)
+                        }
+                      >
+                        <option value="">Select field</option>
+                        {tableFields.map((field) => (
+                          <option key={field.id} value={field.name}>
+                            {field.name} ({field.type})
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+
+                    {index < fieldForm.formulaParts.length - 1 && (
+                      <label className="field-block formula-operator">
+                        <span>Operator</span>
+                        <select
+                          value={part.operator}
+                          onChange={(e) =>
+                            updateFormulaPart(part.id, "operator", e.target.value)
+                          }
+                        >
+                          <option value="+">+</option>
+                          <option value="-">-</option>
+                          <option value="*">*</option>
+                          <option value="/">/</option>
+                        </select>
+                      </label>
+                    )}
+
+                    <button
+                      type="button"
+                      className="remove-part-btn"
+                      onClick={() => removeFormulaPart(part.id)}
+                    >
+                      Remove
+                    </button>
+                  </div>
+                );
+              })}
 
               <div className="formula-actions">
                 <button type="button" onClick={addFormulaPart}>
                   + Add Another Field
                 </button>
               </div>
+
+              <label className="field-block">
+                <span>Rounding</span>
+                <label style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                  <input
+                    type="checkbox"
+                    checked={fieldForm.roundResult}
+                    onChange={(e) =>
+                      setFieldForm((prev) => ({
+                        ...prev,
+                        roundResult: e.target.checked,
+                      }))
+                    }
+                    style={{ width: "auto" }}
+                  />
+                  Round result to 2 decimal places
+                </label>
+              </label>
 
               {formulaPreview && (
                 <div className="formula-preview">
@@ -1039,7 +1811,7 @@ export default function App() {
                 >
                   <option value="">Select sheet</option>
                   {categories
-                    .filter((cat) => cat.id !== selectedCategoryId && cat.table)
+                    .filter((cat) => cat.id !== selectedCategoryId && cat.tables?.length)
                     .map((cat) => (
                       <option key={cat.id} value={cat.id}>
                         {cat.name}
@@ -1116,14 +1888,12 @@ export default function App() {
                   </select>
                 ) : field.type === "number" ? (
                   <input
-                    type="number"
-                    value={rowForm[field.name] ?? ""}
-                    onChange={(e) =>
+                    {...getNumberInputProps(rowForm[field.name], (value) =>
                       setRowForm((prev) => ({
                         ...prev,
-                        [field.name]: e.target.value,
+                        [field.name]: value,
                       }))
-                    }
+                    )}
                   />
                 ) : (
                   <input
