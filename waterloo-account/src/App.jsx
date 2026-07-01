@@ -247,6 +247,7 @@ export default function App() {
 
     if (!firstRow) {
       return {
+        tableName: table.name,
         field: sheetQuickField,
         value: "",
       };
@@ -1312,9 +1313,7 @@ export default function App() {
                             <button
                               type="button"
                               className="delete-mini"
-                              onClick={() =>
-                                requestDeleteTable(table.id, table.name)
-                              }
+                              onClick={() => requestDeleteTable(table.id, table.name)}
                             >
                               ×
                             </button>
@@ -1356,21 +1355,6 @@ export default function App() {
                                 >
                                   Add Row
                                 </button>
-                              </div>
-                            </div>
-
-                            <div className="info-grid">
-                              <div className="info-card">
-                                <span>Fields</span>
-                                <strong>{table.fields.length}</strong>
-                              </div>
-                              <div className="info-card">
-                                <span>Rows</span>
-                                <strong>{table.rows.length}</strong>
-                              </div>
-                              <div className="info-card">
-                                <span>Quick value</span>
-                                <strong>{tableQuickField ? quickValue || "" : ""}</strong>
                               </div>
                             </div>
 
