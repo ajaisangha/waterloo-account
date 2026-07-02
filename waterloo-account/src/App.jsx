@@ -35,10 +35,10 @@ function createFormulaPart(tableId = "", fieldName = "", operator = "+") {
 }
 
 function deepCopyTable(table, options = {}) {
-  const { renameTable = true } = options;
+  const { renameTable = true, tableIdMap = {} } = options;
 
   return {
-    id: uid(),
+    id: tableIdMap[table.id] || uid(),
     name: renameTable ? `${table.name} Copy` : table.name,
     fields: (table.fields || []).map((field) => {
       const copiedField = {
@@ -50,7 +50,7 @@ function deepCopyTable(table, options = {}) {
       if (field.type === "formula") {
         copiedField.formulaParts = (field.formulaParts || []).map((part) => ({
           id: uid(),
-          tableId: part.tableId || "",
+          tableId: tableIdMap[part.tableId] || part.tableId || "",
           fieldName: part.fieldName || "",
           operator: part.operator || "",
         }));
@@ -73,14 +73,24 @@ function deepCopyTable(table, options = {}) {
 }
 
 function deepCopySheet(sheet) {
+  const sourceTables = sheet.tables || [];
+
+  const tableIdMap = sourceTables.reduce((acc, table) => {
+    acc[table.id] = uid();
+    return acc;
+  }, {});
+
   return {
     id: uid(),
     name: `${sheet.name} Copy`,
-    tables: (sheet.tables || []).map((table) =>
-      deepCopyTable(table, { renameTable: false })
+    tables: sourceTables.map((table) =>
+      deepCopyTable(table, {
+        renameTable: false,
+        tableIdMap,
+      })
     ),
     quickSummary: {
-      tableId: sheet.quickSummary?.tableId || "",
+      tableId: tableIdMap[sheet.quickSummary?.tableId] || "",
       fieldName: sheet.quickSummary?.fieldName || "",
     },
   };
@@ -1774,7 +1784,9 @@ export default function App() {
                   <h3>No table yet</h3>
                   <p>Create a table under this sheet first.</p>
                   <div className="empty-actions">
-                    <button onClick={() => openDialog(tableDialogRef)}>Add Table</button>
+                    <button onClick={() => openDialog(tableDialogRef)}>
+                      Add Table
+                    </button>
                   </div>
                 </section>
               )}
@@ -1871,6 +1883,35 @@ export default function App() {
       </DialogBox>
 
       <DialogBox
+        dialogRef={renameTableDialogRef}
+        title="Edit Table Name"
+        actions={
+          <>
+            <button
+              className="secondary-btn"
+              type="button"
+              onClick={() => closeDialog(renameTableDialogRef)}
+            >
+              Cancel
+            </button>
+            <button type="button" onClick={saveTableRename}>
+              Save
+            </button>
+          </>
+        }
+      >
+        <label className="field-block">
+          <span>Table name</span>
+          <input
+            type="text"
+            value={renameTableForm.name}
+            onChange={(e) => setRenameTableForm({ name: e.target.value })}
+            placeholder="Table name"
+          />
+        </label>
+      </DialogBox>
+
+      <DialogBox
         dialogRef={copyExternalTableDialogRef}
         title="Copy Table From Another Sheet"
         actions={
@@ -1930,35 +1971,6 @@ export default function App() {
             </select>
           </label>
         </div>
-      </DialogBox>
-
-      <DialogBox
-        dialogRef={renameTableDialogRef}
-        title="Edit Table Name"
-        actions={
-          <>
-            <button
-              className="secondary-btn"
-              type="button"
-              onClick={() => closeDialog(renameTableDialogRef)}
-            >
-              Cancel
-            </button>
-            <button type="button" onClick={saveTableRename}>
-              Save
-            </button>
-          </>
-        }
-      >
-        <label className="field-block">
-          <span>Table name</span>
-          <input
-            type="text"
-            value={renameTableForm.name}
-            onChange={(e) => setRenameTableForm({ name: e.target.value })}
-            placeholder="Table name"
-          />
-        </label>
       </DialogBox>
 
       <DialogBox
@@ -2023,9 +2035,7 @@ export default function App() {
           {fieldForm.type === "formula" && (
             <div className="formula-builder">
               {fieldForm.formulaParts.map((part, index) => {
-                const tableFields = getFormulaFieldsForTable(
-                  part.tableId || selectedTableId
-                );
+                const tableFields = getFormulaFieldsForTable(part.tableId || selectedTableId);
 
                 return (
                   <div key={part.id} className="formula-row formula-row-wide">
@@ -2063,7 +2073,7 @@ export default function App() {
                       </select>
                     </label>
 
-                    {index < fieldForm.formulaParts.length - 1 ? (
+                    {index < fieldForm.formulaParts.length - 1 && (
                       <label className="field-block formula-operator">
                         <span>Operator</span>
                         <select
@@ -2078,8 +2088,6 @@ export default function App() {
                           <option value="/">/</option>
                         </select>
                       </label>
-                    ) : (
-                      <div />
                     )}
 
                     <button
@@ -2118,7 +2126,9 @@ export default function App() {
               </label>
 
               {formulaPreview && (
-                <div className="formula-preview">Preview: {formulaPreview}</div>
+                <div className="formula-preview">
+                  Preview: {formulaPreview}
+                </div>
               )}
             </div>
           )}
