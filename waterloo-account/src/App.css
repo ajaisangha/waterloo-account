@@ -48,7 +48,7 @@ button {
   padding: 10px 14px;
   background: var(--primary);
   color: #fff;
-  transition: background 0.2s ease, transform 0.2s ease;
+  transition: background 0.2s ease, transform 0.2s ease, opacity 0.2s ease;
   white-space: nowrap;
 }
 
@@ -173,6 +173,10 @@ input[type="number"] {
   box-shadow: inset 0 0 0 1px #2dd4bf;
 }
 
+.dragging-card {
+  opacity: 0.55;
+}
+
 .sheet-btn {
   width: 100%;
   text-align: left;
@@ -189,7 +193,7 @@ input[type="number"] {
 }
 
 .sheet-btn-block {
-  margin-bottom: 10px;
+  margin-bottom: 8px;
 }
 
 .sheet-btn-name {
@@ -203,6 +207,23 @@ input[type="number"] {
   line-height: 1.25;
   font-weight: 700;
   color: #f8fafc;
+}
+
+.sheet-card-value {
+  min-height: 24px;
+  margin: 0 0 10px;
+  padding: 0 10px;
+  color: #7ee7da;
+  font-size: 15px;
+  font-weight: 700;
+  line-height: 1.25;
+  font-variant-numeric: tabular-nums;
+  word-break: break-word;
+}
+
+.sheet-card-empty {
+  color: #94a3b8;
+  font-weight: 500;
 }
 
 .delete-mini {
@@ -242,6 +263,18 @@ input[type="number"] {
   align-items: flex-end;
   gap: 18px;
   flex-wrap: wrap;
+}
+
+.sheet-header-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.drag-hint {
+  font-size: 12px;
+  color: var(--muted);
 }
 
 .eyebrow {
@@ -408,15 +441,6 @@ input[type="number"] {
 
 .table-header-value-inline {
   margin-left: 4px;
-}
-
-.table-header-tools {
-  display: flex;
-  align-items: end;
-  gap: 10px;
-  flex-wrap: wrap;
-  justify-content: flex-end;
-  flex-shrink: 0;
 }
 
 .table-accordion-body {
@@ -705,22 +729,6 @@ td input[type="text"] {
   font-variant-numeric: tabular-nums;
 }
 
-@media (max-width: 760px) {
-  .sheet-title-row {
-    flex-direction: column;
-    align-items: flex-start;
-  }
-
-  .sheet-title-row h2 {
-    white-space: normal;
-  }
-
-  .sheet-title-value {
-    width: 100%;
-    justify-content: space-between;
-  }
-}
-
 @media (max-width: 1100px) {
   .app-shell {
     grid-template-columns: 1fr;
@@ -784,5 +792,24 @@ td input[type="text"] {
 
   .sidebar-actions {
     grid-template-columns: 1fr;
+  }
+
+  .sheet-title-row {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  .sheet-title-row h2 {
+    white-space: normal;
+  }
+
+  .sheet-title-value {
+    width: 100%;
+    justify-content: space-between;
+  }
+
+  .sheet-header-top {
+    flex-direction: column;
+    align-items: flex-start;
   }
 }

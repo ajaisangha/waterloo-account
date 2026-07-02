@@ -34,10 +34,12 @@ function createFormulaPart(tableId = "", fieldName = "", operator = "+") {
   return { id: uid(), tableId, fieldName, operator };
 }
 
-function deepCopyTable(table) {
+function deepCopyTable(table, options = {}) {
+  const { renameTable = true } = options;
+
   return {
     id: uid(),
-    name: `${table.name} Copy`,
+    name: renameTable ? `${table.name} Copy` : table.name,
     fields: (table.fields || []).map((field) => {
       const copiedField = {
         id: uid(),
@@ -74,12 +76,22 @@ function deepCopySheet(sheet) {
   return {
     id: uid(),
     name: `${sheet.name} Copy`,
-    tables: (sheet.tables || []).map((table) => deepCopyTable(table)),
+    tables: (sheet.tables || []).map((table) =>
+      deepCopyTable(table, { renameTable: false })
+    ),
     quickSummary: {
       tableId: sheet.quickSummary?.tableId || "",
       fieldName: sheet.quickSummary?.fieldName || "",
     },
   };
+}
+
+function moveItem(list, fromIndex, toIndex) {
+  if (fromIndex === -1 || toIndex === -1 || fromIndex === toIndex) return list;
+  const copy = [...list];
+  const [item] = copy.splice(fromIndex, 1);
+  copy.splice(toIndex, 0, item);
+  return copy;
 }
 
 export default function App() {
@@ -116,6 +128,9 @@ export default function App() {
   const [editingSheetId, setEditingSheetId] = useState(null);
   const [rowForm, setRowForm] = useState({});
   const [tableQuickField, setTableQuickField] = useState("");
+
+  const [dragSheetId, setDragSheetId] = useState(null);
+  const [dragTableId, setDragTableId] = useState(null);
 
   const [confirmState, setConfirmState] = useState({
     title: "",
@@ -311,6 +326,28 @@ export default function App() {
       value,
     };
   }, [selectedCategory, selectedSheetQuickConfig, allTables]);
+
+  function getSheetSummaryForCategory(category) {
+    const quickTableId = category?.quickSummary?.tableId || "";
+    const quickFieldName = category?.quickSummary?.fieldName || "";
+
+    if (!quickTableId || !quickFieldName) return "";
+
+    const table = (category.tables || []).find((item) => item.id === quickTableId);
+    if (!table) return "";
+
+    const field = (table.fields || []).find((item) => item.name === quickFieldName);
+    if (!field) return "";
+
+    const firstRow = table.rows?.[0];
+    if (!firstRow) return "";
+
+    if (field.type === "formula") {
+      return getFormulaValue(firstRow, field, table);
+    }
+
+    return firstRow.values?.[field.name] || "";
+  }
 
   useEffect(() => {
     if (!selectedCategoryId && categories.length > 0) {
@@ -697,7 +734,7 @@ export default function App() {
   async function copyTableWithinSheet(table) {
     if (!selectedCategory || !table) return;
 
-    const copiedTable = deepCopyTable(table);
+    const copiedTable = deepCopyTable(table, { renameTable: true });
 
     const nextData = {
       ...data,
@@ -729,7 +766,7 @@ export default function App() {
 
     if (!sourceTable) return;
 
-    const copiedTable = deepCopyTable(sourceTable);
+    const copiedTable = deepCopyTable(sourceTable, { renameTable: true });
 
     const nextData = {
       ...data,
@@ -773,6 +810,44 @@ export default function App() {
     await saveData(nextData);
     setExpandedTableIds((prev) => prev.filter((id) => id !== tableId));
     setSelectedTableId(remainingTables[0]?.id || null);
+  }
+
+  async function reorderSheets(sourceSheetId, targetSheetId) {
+    if (!sourceSheetId || !targetSheetId || sourceSheetId === targetSheetId) return;
+
+    const sourceIndex = data.categories.findIndex((item) => item.id === sourceSheetId);
+    const targetIndex = data.categories.findIndex((item) => item.id === targetSheetId);
+
+    const nextData = {
+      ...data,
+      categories: moveItem(data.categories, sourceIndex, targetIndex),
+    };
+
+    await saveData(nextData);
+  }
+
+  async function reorderTables(sourceTableId, targetTableId) {
+    if (!selectedCategory || !sourceTableId || !targetTableId || sourceTableId === targetTableId) {
+      return;
+    }
+
+    const tables = selectedCategory.tables || [];
+    const sourceIndex = tables.findIndex((item) => item.id === sourceTableId);
+    const targetIndex = tables.findIndex((item) => item.id === targetTableId);
+
+    const nextData = {
+      ...data,
+      categories: data.categories.map((cat) =>
+        cat.id === selectedCategory.id
+          ? {
+              ...cat,
+              tables: moveItem(tables, sourceIndex, targetIndex),
+            }
+          : cat
+      ),
+    };
+
+    await saveData(nextData);
   }
 
   function requestDeleteTable(tableId, tableName) {
@@ -1303,49 +1378,65 @@ export default function App() {
           </div>
 
           <div className="sheet-list">
-            {categories.map((category) => (
-              <div
-                key={category.id}
-                className={`sheet-item sheet-card ${
-                  selectedCategoryId === category.id ? "active-sheet" : ""
-                }`}
-              >
-                <button
-                  className="sheet-btn sheet-btn-block"
-                  onClick={() => {
-                    setSelectedCategoryId(category.id);
-                    setSelectedTableId(category.tables?.[0]?.id || null);
-                  }}
-                  title={category.name}
-                >
-                  <span className="sheet-btn-name sheet-btn-name-full">{category.name}</span>
-                </button>
+            {categories.map((category) => {
+              const sheetValue = getSheetSummaryForCategory(category);
 
-                <div className="sheet-card-actions">
+              return (
+                <div
+                  key={category.id}
+                  className={`sheet-item sheet-card ${
+                    selectedCategoryId === category.id ? "active-sheet" : ""
+                  } ${dragSheetId === category.id ? "dragging-card" : ""}`}
+                  draggable
+                  onDragStart={() => setDragSheetId(category.id)}
+                  onDragEnd={() => setDragSheetId(null)}
+                  onDragOver={(e) => e.preventDefault()}
+                  onDrop={async () => {
+                    await reorderSheets(dragSheetId, category.id);
+                    setDragSheetId(null);
+                  }}
+                >
                   <button
-                    type="button"
-                    className="field-mini-btn"
-                    onClick={() => openRenameSheetDialog(category)}
+                    className="sheet-btn sheet-btn-block"
+                    onClick={() => {
+                      setSelectedCategoryId(category.id);
+                      setSelectedTableId(category.tables?.[0]?.id || null);
+                    }}
+                    title={category.name}
                   >
-                    Edit
+                    <span className="sheet-btn-name sheet-btn-name-full">{category.name}</span>
                   </button>
-                  <button
-                    type="button"
-                    className="field-mini-btn"
-                    onClick={() => copySheet(category)}
-                  >
-                    Copy
-                  </button>
-                  <button
-                    className="delete-mini"
-                    type="button"
-                    onClick={() => requestDeleteSheet(category.id)}
-                  >
-                    ×
-                  </button>
+
+                  <div className="sheet-card-value">
+                    {sheetValue !== "" ? sheetValue : <span className="sheet-card-empty">—</span>}
+                  </div>
+
+                  <div className="sheet-card-actions">
+                    <button
+                      type="button"
+                      className="field-mini-btn"
+                      onClick={() => openRenameSheetDialog(category)}
+                    >
+                      Edit
+                    </button>
+                    <button
+                      type="button"
+                      className="field-mini-btn"
+                      onClick={() => copySheet(category)}
+                    >
+                      Copy
+                    </button>
+                    <button
+                      className="delete-mini"
+                      type="button"
+                      onClick={() => requestDeleteSheet(category.id)}
+                    >
+                      ×
+                    </button>
+                  </div>
                 </div>
-              </div>
-            ))}
+              );
+            })}
           </div>
         </aside>
 
@@ -1360,7 +1451,10 @@ export default function App() {
               <header className="topbar">
                 <div className="topbar-main">
                   <div className="sheet-header-block">
-                    <p className="eyebrow">Sheet</p>
+                    <div className="sheet-header-top">
+                      <p className="eyebrow">Sheet</p>
+                      <span className="drag-hint">Drag sheets/tables to sort</span>
+                    </div>
 
                     <div className="sheet-title-row">
                       <h2>{selectedCategory.name}</h2>
@@ -1448,7 +1542,15 @@ export default function App() {
                           key={table.id}
                           className={`table-accordion-item ${
                             isSelected ? "active-table-accordion" : ""
-                          }`}
+                          } ${dragTableId === table.id ? "dragging-card" : ""}`}
+                          draggable
+                          onDragStart={() => setDragTableId(table.id)}
+                          onDragEnd={() => setDragTableId(null)}
+                          onDragOver={(e) => e.preventDefault()}
+                          onDrop={async () => {
+                            await reorderTables(dragTableId, table.id);
+                            setDragTableId(null);
+                          }}
                         >
                           <div className="table-accordion-header">
                             <button
@@ -1503,6 +1605,7 @@ export default function App() {
                               </button>
                             </div>
                           </div>
+
                           {isExpanded && (
                             <div className="table-accordion-body">
                               <div className="table-toolbar">
