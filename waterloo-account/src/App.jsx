@@ -30,12 +30,17 @@ function DialogBox({ dialogRef, title, children, actions }) {
   );
 }
 
-function createFormulaPart(tableId = "", fieldName = "", operator = "+") {
-  return { id: uid(), tableId, fieldName, operator };
+function createFormulaPart(
+  categoryId = "",
+  tableId = "",
+  fieldName = "",
+  operator = "+"
+) {
+  return { id: uid(), categoryId, tableId, fieldName, operator };
 }
 
 function deepCopyTable(table, options = {}) {
-  const { renameTable = true, tableIdMap = {} } = options;
+  const { renameTable = true, tableIdMap = {}, targetCategoryId = null } = options;
 
   return {
     id: tableIdMap[table.id] || uid(),
@@ -50,6 +55,7 @@ function deepCopyTable(table, options = {}) {
       if (field.type === "formula") {
         copiedField.formulaParts = (field.formulaParts || []).map((part) => ({
           id: uid(),
+          categoryId: targetCategoryId || part.categoryId || "",
           tableId: tableIdMap[part.tableId] || part.tableId || "",
           fieldName: part.fieldName || "",
           operator: part.operator || "",
@@ -73,6 +79,7 @@ function deepCopyTable(table, options = {}) {
 }
 
 function deepCopySheet(sheet) {
+  const newSheetId = uid();
   const sourceTables = sheet.tables || [];
 
   const tableIdMap = sourceTables.reduce((acc, table) => {
@@ -81,12 +88,13 @@ function deepCopySheet(sheet) {
   }, {});
 
   return {
-    id: uid(),
+    id: newSheetId,
     name: `${sheet.name} Copy`,
     tables: sourceTables.map((table) =>
       deepCopyTable(table, {
         renameTable: false,
         tableIdMap,
+        targetCategoryId: newSheetId,
       })
     ),
     quickSummary: {
@@ -128,8 +136,8 @@ export default function App() {
     linkFieldName: "",
     roundResult: false,
     formulaParts: [
-      createFormulaPart("", "", "+"),
-      createFormulaPart("", "", ""),
+      createFormulaPart("", "", "", "+"),
+      createFormulaPart("", "", "", ""),
     ],
   });
 
@@ -231,13 +239,6 @@ export default function App() {
     return linkedTable?.fields || [];
   }, [categories, fieldForm.linkCategoryId]);
 
-  const formulaTableOptions = useMemo(() => {
-    return allTables.map((table) => ({
-      id: table.id,
-      label: `${table.categoryName} / ${table.name}`,
-    }));
-  }, [allTables]);
-
   const selectedSheetQuickConfig = useMemo(() => {
     return {
       tableId: selectedCategory?.quickSummary?.tableId || "",
@@ -293,6 +294,18 @@ export default function App() {
       }
       return true;
     });
+  }
+
+  function getFormulaTablesForCategory(categoryId) {
+    const category = categories.find((item) => item.id === categoryId);
+    return (category?.tables || []).map((table) => ({
+      id: table.id,
+      name: table.name,
+    }));
+  }
+
+  function getCategoryName(categoryId) {
+    return categories.find((cat) => cat.id === categoryId)?.name || "Sheet";
   }
 
   const selectedSheetQuickSummary = useMemo(() => {
@@ -429,6 +442,7 @@ export default function App() {
     if (field.type === "formula") {
       cleanField.formulaParts = (field.formulaParts || []).map((part) => ({
         id: part.id || uid(),
+        categoryId: part.categoryId || "",
         tableId: part.tableId || "",
         fieldName: part.fieldName || "",
         operator: part.operator || "",
@@ -520,8 +534,8 @@ export default function App() {
       linkFieldName: "",
       roundResult: false,
       formulaParts: [
-        createFormulaPart(selectedTableId || "", "", "+"),
-        createFormulaPart(selectedTableId || "", "", ""),
+        createFormulaPart(selectedCategoryId || "", selectedTableId || "", "", "+"),
+        createFormulaPart(selectedCategoryId || "", selectedTableId || "", "", ""),
       ],
     });
     setEditingFieldId(null);
@@ -532,7 +546,7 @@ export default function App() {
       ...prev,
       formulaParts: [
         ...prev.formulaParts,
-        createFormulaPart(selectedTableId || "", "", ""),
+        createFormulaPart(selectedCategoryId || "", selectedTableId || "", "", ""),
       ],
     }));
   }
@@ -553,6 +567,15 @@ export default function App() {
       formulaParts: prev.formulaParts.map((part) => {
         if (part.id !== partId) return part;
 
+        if (key === "categoryId") {
+          return {
+            ...part,
+            categoryId: value,
+            tableId: "",
+            fieldName: "",
+          };
+        }
+
         if (key === "tableId") {
           return {
             ...part,
@@ -569,9 +592,10 @@ export default function App() {
   function buildFormulaText(parts) {
     return parts
       .map((part, index) => {
+        const categoryName = getCategoryName(part.categoryId);
         const tableName =
           allTables.find((table) => table.id === part.tableId)?.name || "Table";
-        const token = `${tableName}.${part.fieldName || ""}`.trim();
+        const token = `${categoryName}.${tableName}.${part.fieldName || ""}`.trim();
 
         if (index === parts.length - 1) return token;
         return `${token} ${part.operator || ""}`.trim();
@@ -744,7 +768,10 @@ export default function App() {
   async function copyTableWithinSheet(table) {
     if (!selectedCategory || !table) return;
 
-    const copiedTable = deepCopyTable(table, { renameTable: true });
+    const copiedTable = deepCopyTable(table, {
+      renameTable: true,
+      targetCategoryId: selectedCategory.id,
+    });
 
     const nextData = {
       ...data,
@@ -776,7 +803,10 @@ export default function App() {
 
     if (!sourceTable) return;
 
-    const copiedTable = deepCopyTable(sourceTable, { renameTable: true });
+    const copiedTable = deepCopyTable(sourceTable, {
+      renameTable: true,
+      targetCategoryId: sourceSheet?.id || "",
+    });
 
     const nextData = {
       ...data,
@@ -885,15 +915,35 @@ export default function App() {
       roundResult: Boolean(field.roundResult),
       formulaParts:
         field.formulaParts?.length > 0
-          ? field.formulaParts.map((part, index, arr) => ({
-              id: uid(),
-              tableId: part.tableId || selectedTableId || "",
-              fieldName: part.fieldName || "",
-              operator: index === arr.length - 1 ? "" : part.operator || "+",
-            }))
+          ? field.formulaParts.map((part, index, arr) => {
+              const sourceTable =
+                allTables.find((table) => table.id === part.tableId) || null;
+
+              return {
+                id: uid(),
+                categoryId:
+                  part.categoryId ||
+                  sourceTable?.categoryId ||
+                  selectedCategoryId ||
+                  "",
+                tableId: part.tableId || selectedTableId || "",
+                fieldName: part.fieldName || "",
+                operator: index === arr.length - 1 ? "" : part.operator || "+",
+              };
+            })
           : [
-              createFormulaPart(selectedTableId || "", "", "+"),
-              createFormulaPart(selectedTableId || "", "", ""),
+              createFormulaPart(
+                selectedCategoryId || "",
+                selectedTableId || "",
+                "",
+                "+"
+              ),
+              createFormulaPart(
+                selectedCategoryId || "",
+                selectedTableId || "",
+                "",
+                ""
+              ),
             ],
     });
     openDialog(fieldDialogRef);
@@ -916,12 +966,13 @@ export default function App() {
 
     if (fieldForm.type === "formula") {
       const validParts = fieldForm.formulaParts.filter(
-        (part) => part.tableId && part.fieldName
+        (part) => part.categoryId && part.tableId && part.fieldName
       );
       if (validParts.length < 2) return;
 
       preparedField.formulaParts = validParts.map((part, index) => ({
         id: uid(),
+        categoryId: part.categoryId,
         tableId: part.tableId,
         fieldName: part.fieldName,
         operator: index === validParts.length - 1 ? "" : part.operator || "+",
@@ -2019,8 +2070,18 @@ export default function App() {
                   linkFieldName: "",
                   roundResult: false,
                   formulaParts: [
-                    createFormulaPart(selectedTableId || "", "", "+"),
-                    createFormulaPart(selectedTableId || "", "", ""),
+                    createFormulaPart(
+                      selectedCategoryId || "",
+                      selectedTableId || "",
+                      "",
+                      "+"
+                    ),
+                    createFormulaPart(
+                      selectedCategoryId || "",
+                      selectedTableId || "",
+                      "",
+                      ""
+                    ),
                   ],
                 }))
               }
@@ -2035,22 +2096,41 @@ export default function App() {
           {fieldForm.type === "formula" && (
             <div className="formula-builder">
               {fieldForm.formulaParts.map((part, index) => {
-                const tableFields = getFormulaFieldsForTable(part.tableId || selectedTableId);
+                const categoryTables = getFormulaTablesForCategory(part.categoryId);
+                const tableFields = getFormulaFieldsForTable(part.tableId, true);
 
                 return (
                   <div key={part.id} className="formula-row formula-row-wide">
                     <label className="field-block">
-                      <span>Source table</span>
+                      <span>Sheet</span>
+                      <select
+                        value={part.categoryId}
+                        onChange={(e) =>
+                          updateFormulaPart(part.id, "categoryId", e.target.value)
+                        }
+                      >
+                        <option value="">Select sheet</option>
+                        {categories.map((category) => (
+                          <option key={category.id} value={category.id}>
+                            {category.name}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+
+                    <label className="field-block">
+                      <span>Table</span>
                       <select
                         value={part.tableId}
                         onChange={(e) =>
                           updateFormulaPart(part.id, "tableId", e.target.value)
                         }
+                        disabled={!part.categoryId}
                       >
                         <option value="">Select table</option>
-                        {formulaTableOptions.map((tableOption) => (
+                        {categoryTables.map((tableOption) => (
                           <option key={tableOption.id} value={tableOption.id}>
-                            {tableOption.label}
+                            {tableOption.name}
                           </option>
                         ))}
                       </select>
@@ -2063,6 +2143,7 @@ export default function App() {
                         onChange={(e) =>
                           updateFormulaPart(part.id, "fieldName", e.target.value)
                         }
+                        disabled={!part.tableId}
                       >
                         <option value="">Select field</option>
                         {tableFields.map((field) => (
@@ -2073,7 +2154,7 @@ export default function App() {
                       </select>
                     </label>
 
-                    {index < fieldForm.formulaParts.length - 1 && (
+                    {index < fieldForm.formulaParts.length - 1 ? (
                       <label className="field-block formula-operator">
                         <span>Operator</span>
                         <select
@@ -2088,6 +2169,8 @@ export default function App() {
                           <option value="/">/</option>
                         </select>
                       </label>
+                    ) : (
+                      <div />
                     )}
 
                     <button

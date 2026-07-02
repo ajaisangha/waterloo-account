@@ -813,3 +813,13 @@ td input[type="text"] {
     align-items: flex-start;
   }
 }
+
+.formula-row-wide {
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) minmax(0, 1fr) 110px 100px;
+}
+
+@media (max-width: 900px) {
+  .formula-row-wide {
+    grid-template-columns: 1fr;
+  }
+}
