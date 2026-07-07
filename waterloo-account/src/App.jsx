@@ -112,6 +112,22 @@ function moveItem(list, fromIndex, toIndex) {
   return copy;
 }
 
+function isValidPartialNumber(value) {
+  return /^-?\d*(\.\d*)?$/.test(value);
+}
+
+function toNumericValue(value) {
+  if (value === null || value === undefined || value === "") return 0;
+  const parsed = Number(String(value).replace(/,/g, "").trim());
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function formatFormulaResult(result, roundResult = false) {
+  if (!Number.isFinite(result)) return "";
+  if (roundResult) return Number(result).toFixed(2);
+  return Number(String(result.toFixed(10))).toString();
+}
+
 export default function App() {
   const [data, setData] = useState(emptyData);
   const [selectedCategoryId, setSelectedCategoryId] = useState(null);
@@ -149,6 +165,8 @@ export default function App() {
 
   const [dragSheetId, setDragSheetId] = useState(null);
   const [dragTableId, setDragTableId] = useState(null);
+
+  const [cellDrafts, setCellDrafts] = useState({});
 
   const [confirmState, setConfirmState] = useState({
     title: "",
@@ -278,6 +296,27 @@ export default function App() {
     );
     return sourceSheet?.tables || [];
   }, [categories, copyExternalTableForm.sourceSheetId]);
+
+  function getCellDraftKey(categoryId, tableId, rowId, fieldName) {
+    return `${categoryId}::${tableId}::${rowId}::${fieldName}`;
+  }
+
+  function getCellDisplayValue(categoryId, tableId, rowId, fieldName, savedValue) {
+    const key = getCellDraftKey(categoryId, tableId, rowId, fieldName);
+    return Object.prototype.hasOwnProperty.call(cellDrafts, key)
+      ? cellDrafts[key]
+      : savedValue ?? "";
+  }
+
+  function clearCellDraft(categoryId, tableId, rowId, fieldName) {
+    const key = getCellDraftKey(categoryId, tableId, rowId, fieldName);
+    setCellDrafts((prev) => {
+      if (!Object.prototype.hasOwnProperty.call(prev, key)) return prev;
+      const next = { ...prev };
+      delete next[key];
+      return next;
+    });
+  }
 
   function getFormulaFieldsForTable(tableId, excludeEditingField = true) {
     const table = allTables.find((item) => item.id === tableId);
@@ -604,16 +643,6 @@ export default function App() {
       .trim();
   }
 
-  function getNumberInputProps(value, onChange) {
-    return {
-      type: "number",
-      step: "0.01",
-      inputMode: "decimal",
-      value: value ?? "",
-      onChange: (e) => onChange(e.target.value),
-    };
-  }
-
   const formulaPreview =
     fieldForm.type === "formula" && fieldForm.name
       ? `${buildFormulaText(fieldForm.formulaParts)} = ${fieldForm.name}`
@@ -791,40 +820,40 @@ export default function App() {
   }
 
   async function copyTableFromAnotherSheet() {
-    if (!selectedCategory) return;
-    if (!copyExternalTableForm.sourceSheetId || !copyExternalTableForm.sourceTableId) return;
+  if (!selectedCategory) return;
+  if (!copyExternalTableForm.sourceSheetId || !copyExternalTableForm.sourceTableId) return;
 
-    const sourceSheet = categories.find(
-      (cat) => cat.id === copyExternalTableForm.sourceSheetId
-    );
-    const sourceTable = sourceSheet?.tables?.find(
-      (table) => table.id === copyExternalTableForm.sourceTableId
-    );
+  const sourceSheet = categories.find(
+    (cat) => cat.id === copyExternalTableForm.sourceSheetId
+  );
+  const sourceTable = sourceSheet?.tables?.find(
+    (table) => table.id === copyExternalTableForm.sourceTableId
+  );
 
-    if (!sourceTable) return;
+  if (!sourceTable) return;
 
-    const copiedTable = deepCopyTable(sourceTable, {
-      renameTable: true,
-      targetCategoryId: sourceSheet?.id || "",
-    });
+  const copiedTable = deepCopyTable(sourceTable, {
+    renameTable: true,
+    targetCategoryId: selectedCategory.id,
+  });
 
-    const nextData = {
-      ...data,
-      categories: data.categories.map((cat) =>
-        cat.id === selectedCategory.id
-          ? {
-              ...cat,
-              tables: [...(cat.tables || []), copiedTable],
-            }
-          : cat
-      ),
-    };
+  const nextData = {
+    ...data,
+    categories: data.categories.map((cat) =>
+      cat.id === selectedCategory.id
+        ? {
+            ...cat,
+            tables: [...(cat.tables || []), copiedTable],
+          }
+        : cat
+    ),
+  };
 
-    await saveData(nextData);
-    setSelectedTableId(copiedTable.id);
-    setExpandedTableIds((prev) => [...new Set([...prev, copiedTable.id])]);
-    closeDialog(copyExternalTableDialogRef);
-  }
+  await saveData(nextData);
+  setSelectedTableId(copiedTable.id);
+  setExpandedTableIds((prev) => [...new Set([...prev, copiedTable.id])]);
+  closeDialog(copyExternalTableDialogRef);
+}
 
   async function deleteTable(tableId) {
     if (!selectedCategory) return;
@@ -1121,8 +1150,11 @@ export default function App() {
     closeDialog(rowDialogRef);
   }
 
-  async function updateCell(rowId, fieldName, value) {
-    if (!selectedCategory || !selectedTable) return;
+  async function updateCell(rowId, fieldName, value, tableIdOverride = null) {
+    if (!selectedCategory) return;
+
+    const activeTableId = tableIdOverride || selectedTableId;
+    if (!activeTableId) return;
 
     const nextData = {
       ...data,
@@ -1131,7 +1163,7 @@ export default function App() {
           ? {
               ...cat,
               tables: cat.tables.map((table) =>
-                table.id === selectedTable.id
+                table.id === activeTableId
                   ? {
                       ...table,
                       rows: table.rows.map((row) =>
@@ -1164,15 +1196,30 @@ export default function App() {
     return allTables.find((table) => table.id === tableId);
   }
 
+  function getRowForFormula(table, fallbackRow, rowId) {
+    if (!table) return fallbackRow;
+    if (rowId) {
+      const sameRowById = (table.rows || []).find((item) => item.id === rowId);
+      if (sameRowById) return sameRowById;
+    }
+
+    const sourceIndex = (selectedTable?.rows || []).findIndex((item) => item.id === rowId);
+    if (sourceIndex > -1 && table.rows?.[sourceIndex]) {
+      return table.rows[sourceIndex];
+    }
+
+    return table.rows?.[0] || fallbackRow;
+  }
+
   function evaluateFormulaField(row, field, tableContext, visited = new Set()) {
     if (!field) return 0;
 
-    const visitKey = `${tableContext?.id || "table"}::${field.name}`;
+    const visitKey = `${tableContext?.id || "table"}::${row?.id || "row"}::${field.name}`;
     if (visited.has(visitKey)) return 0;
     visited.add(visitKey);
 
     if (field.type === "number") {
-      return Number(row?.values?.[field.name] || 0);
+      return toNumericValue(row?.values?.[field.name]);
     }
 
     if (field.type === "formula" && field.formulaParts?.length) {
@@ -1181,7 +1228,7 @@ export default function App() {
       field.formulaParts.forEach((part, index) => {
         const sourceTable = getTableById(part.tableId || tableContext?.id);
         const sourceField = sourceTable?.fields?.find((f) => f.name === part.fieldName);
-        const sourceRow = sourceTable?.rows?.[0] || row;
+        const sourceRow = getRowForFormula(sourceTable, row, row?.id);
 
         let partValue = 0;
 
@@ -1194,7 +1241,7 @@ export default function App() {
               new Set(visited)
             );
           } else {
-            partValue = Number(sourceRow?.values?.[sourceField.name] || 0);
+            partValue = toNumericValue(sourceRow?.values?.[sourceField.name]);
           }
         }
 
@@ -1221,12 +1268,7 @@ export default function App() {
     if (!field?.formulaParts?.length) return "";
 
     const result = evaluateFormulaField(row, field, tableContext);
-
-    if (field.roundResult) {
-      return Number(result).toFixed(2);
-    }
-
-    return Number.isFinite(result) ? result : "";
+    return formatFormulaResult(result, field.roundResult);
   }
 
   function getLinkedDisplayValue(row, field) {
@@ -1406,6 +1448,7 @@ export default function App() {
         setSelectedTableId(null);
         setExpandedTableIds([]);
         setTableQuickField("");
+        setCellDrafts({});
       }
     );
   }
@@ -1758,7 +1801,8 @@ export default function App() {
                                                       updateCell(
                                                         row.id,
                                                         field.name,
-                                                        e.target.value
+                                                        e.target.value,
+                                                        table.id
                                                       );
                                                     }}
                                                   >
@@ -1779,13 +1823,46 @@ export default function App() {
                                                 </div>
                                               ) : field.type === "number" ? (
                                                 <input
-                                                  {...getNumberInputProps(
-                                                    row.values[field.name],
-                                                    (value) => {
-                                                      setSelectedTableId(table.id);
-                                                      updateCell(row.id, field.name, value);
-                                                    }
+                                                  type="text"
+                                                  inputMode="decimal"
+                                                  value={getCellDisplayValue(
+                                                    selectedCategory.id,
+                                                    table.id,
+                                                    row.id,
+                                                    field.name,
+                                                    row.values[field.name]
                                                   )}
+                                                  onChange={(e) => {
+                                                    const nextValue = e.target.value;
+                                                    if (!isValidPartialNumber(nextValue)) return;
+
+                                                    const key = getCellDraftKey(
+                                                      selectedCategory.id,
+                                                      table.id,
+                                                      row.id,
+                                                      field.name
+                                                    );
+
+                                                    setCellDrafts((prev) => ({
+                                                      ...prev,
+                                                      [key]: nextValue,
+                                                    }));
+                                                  }}
+                                                  onBlur={async (e) => {
+                                                    const nextValue = e.target.value.trim();
+                                                    await updateCell(
+                                                      row.id,
+                                                      field.name,
+                                                      nextValue,
+                                                      table.id
+                                                    );
+                                                    clearCellDraft(
+                                                      selectedCategory.id,
+                                                      table.id,
+                                                      row.id,
+                                                      field.name
+                                                    );
+                                                  }}
                                                 />
                                               ) : (
                                                 <input
@@ -1796,7 +1873,8 @@ export default function App() {
                                                     updateCell(
                                                       row.id,
                                                       field.name,
-                                                      e.target.value
+                                                      e.target.value,
+                                                      table.id
                                                     );
                                                   }}
                                                 />
@@ -2309,12 +2387,18 @@ export default function App() {
                   </select>
                 ) : field.type === "number" ? (
                   <input
-                    {...getNumberInputProps(rowForm[field.name], (value) =>
+                    type="text"
+                    inputMode="decimal"
+                    value={rowForm[field.name] || ""}
+                    onChange={(e) => {
+                      const nextValue = e.target.value;
+                      if (!isValidPartialNumber(nextValue)) return;
+
                       setRowForm((prev) => ({
                         ...prev,
-                        [field.name]: value,
-                      }))
-                    )}
+                        [field.name]: nextValue,
+                      }));
+                    }}
                   />
                 ) : (
                   <input

@@ -86,10 +86,10 @@ textarea:focus {
   border-color: #14b8a6;
 }
 
-input[type="number"] {
-  width: 10ch;
-  min-width: 10ch;
-  max-width: 10ch;
+input[inputmode="decimal"] {
+  width: 14ch;
+  min-width: 14ch;
+  max-width: 18ch;
   text-align: right;
   font-variant-numeric: tabular-nums;
 }
@@ -494,8 +494,13 @@ td select {
 }
 
 td input[type="text"] {
-  min-width: 10ch;
-  max-width: 16ch;
+  min-width: 12ch;
+  max-width: 24ch;
+}
+
+td input[inputmode="decimal"] {
+  min-width: 12ch;
+  max-width: 18ch;
 }
 
 .formula-cell {
