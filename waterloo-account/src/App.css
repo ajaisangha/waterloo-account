@@ -828,3 +828,105 @@ td input[inputmode="decimal"] {
     grid-template-columns: 1fr;
   }
 }
+
+.field-pill-content {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.field-pill-note,
+.field-dialog-note,
+.mobile-row-note {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.35;
+}
+
+.field-dialog-note {
+  margin-top: -4px;
+}
+
+.desktop-table-view {
+  display: block;
+}
+
+.mobile-table-view {
+  display: none;
+}
+
+.mobile-row-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  padding: 14px;
+  display: grid;
+  gap: 14px;
+  margin-bottom: 14px;
+}
+
+.mobile-row-card-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.mobile-row-grid {
+  display: grid;
+  gap: 12px;
+}
+
+.mobile-row-item {
+  display: grid;
+  gap: 8px;
+  padding-top: 10px;
+  border-top: 1px solid #e8edf4;
+}
+
+.mobile-row-item:first-child {
+  border-top: none;
+  padding-top: 0;
+}
+
+.mobile-row-label-wrap {
+  display: grid;
+  gap: 4px;
+}
+
+.mobile-row-label {
+  font-size: 13px;
+  font-weight: 700;
+  color: #334155;
+}
+
+.mobile-row-value input,
+.mobile-row-value select {
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
+}
+
+@media (max-width: 760px) {
+  .desktop-table-view {
+    display: none;
+  }
+
+  .mobile-table-view {
+    display: block;
+  }
+
+  .field-pill {
+    width: 100%;
+    align-items: flex-start;
+  }
+
+  .field-pill-actions {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .field-pill-buttons {
+    width: 100%;
+  }
+}
