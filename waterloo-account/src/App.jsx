@@ -169,6 +169,7 @@ export default function App() {
   const [dragTableId, setDragTableId] = useState(null);
 
   const [cellDrafts, setCellDrafts] = useState({});
+  const [verticalTableView, setVerticalTableView] = useState({});
 
   const [confirmState, setConfirmState] = useState({
     title: "",
@@ -184,6 +185,8 @@ export default function App() {
   const rowDialogRef = useRef(null);
   const confirmDialogRef = useRef(null);
   const copyExternalTableDialogRef = useRef(null);
+  const tableWrapRefs = useRef({});
+  const rafRef = useRef(null);
 
   const appDocRef = doc(db, ...APP_DOC_PATH);
 
@@ -481,6 +484,60 @@ export default function App() {
       saveGlobalTableQuickField("");
     }
   }, [selectedCategory, allCurrentSheetFieldNames]);
+
+  useEffect(() => {
+    if (!selectedCategory) {
+      setExpandedTableIds([]);
+      return;
+    }
+
+    setExpandedTableIds((prev) => {
+      const validIds = prev.filter((id) =>
+        (selectedCategory.tables || []).some((table) => table.id === id)
+      );
+
+      if (validIds.length > 0) return validIds;
+
+      return selectedCategory.tables?.[0]?.id ? [selectedCategory.tables[0].id] : [];
+    });
+  }, [selectedCategory]);
+
+  useEffect(() => {
+    function checkScrollableTables() {
+      const nextMap = {};
+
+      (selectedCategory?.tables || []).forEach((table) => {
+        const wrap = tableWrapRefs.current[table.id];
+        nextMap[table.id] = wrap ? wrap.scrollWidth > wrap.clientWidth + 4 : false;
+      });
+
+      setVerticalTableView(nextMap);
+    }
+
+    function runChecks() {
+      if (rafRef.current) cancelAnimationFrame(rafRef.current);
+
+      rafRef.current = requestAnimationFrame(() => {
+        checkScrollableTables();
+        requestAnimationFrame(checkScrollableTables);
+      });
+    }
+
+    runChecks();
+    const timeout1 = setTimeout(runChecks, 60);
+    const timeout2 = setTimeout(runChecks, 200);
+    const timeout3 = setTimeout(runChecks, 500);
+
+    window.addEventListener("resize", runChecks);
+
+    return () => {
+      if (rafRef.current) cancelAnimationFrame(rafRef.current);
+      clearTimeout(timeout1);
+      clearTimeout(timeout2);
+      clearTimeout(timeout3);
+      window.removeEventListener("resize", runChecks);
+    };
+  }, [selectedCategory, expandedTableIds, data]);
 
   function sanitizeField(field) {
     const cleanField = {
@@ -1489,6 +1546,7 @@ export default function App() {
         setSelectedTableId(null);
         setExpandedTableIds([]);
         setCellDrafts({});
+        setVerticalTableView({});
       }
     );
   }
@@ -1515,7 +1573,7 @@ export default function App() {
               </option>
             ))}
           </select>
-          <small>Showing {getLinkedDisplayValue(row, field) || "-"}</small>
+          <small>{getLinkedDisplayValue(row, field) || "-"}</small>
         </div>
       );
     }
@@ -1763,6 +1821,7 @@ export default function App() {
                   const isSelected = selectedTableId === table.id;
                   const quickValue = getTableQuickValue(table);
                   const quickFieldName = selectedCategory.tableQuickFieldName || "";
+                  const showVertical = !!verticalTableView[table.id];
 
                   return (
                     <div
@@ -1855,49 +1914,49 @@ export default function App() {
                             </div>
                           </div>
 
-                          <section className="field-strip">
-                            {table.fields.map((field) => (
-                              <div key={field.id} className="field-pill field-pill-actions">
-                                <div className="field-pill-content">
-                                  <span>
-                                    {field.name} ({field.type})
-                                  </span>
-                                  {field.notes && (
-                                    <small className="field-pill-note">{field.notes}</small>
-                                  )}
-                                </div>
-
-                                <div className="field-pill-buttons">
-                                  <button
-                                    type="button"
-                                    className="field-mini-btn"
-                                    onClick={() => {
-                                      setSelectedTableId(table.id);
-                                      openEditFieldDialog(field);
-                                    }}
-                                  >
-                                    Edit
-                                  </button>
-                                  <button
-                                    type="button"
-                                    onClick={() => {
-                                      setSelectedTableId(table.id);
-                                      requestDeleteField(field.name);
-                                    }}
-                                  >
-                                    Delete
-                                  </button>
-                                </div>
-                              </div>
-                            ))}
-                          </section>
-
-                          <section className="table-wrap desktop-table-view">
+                          <section
+                            className={`table-wrap ${showVertical ? "hide-horizontal-table" : ""}`}
+                            ref={(el) => {
+                              tableWrapRefs.current[table.id] = el;
+                            }}
+                          >
                             <table>
                               <thead>
                                 <tr>
                                   {table.fields.map((field) => (
-                                    <th key={field.id}>{field.name}</th>
+                                    <th key={field.id}>
+                                      <div className="th-content">
+                                        <div className="th-text-group">
+                                          <span className="th-title">{field.name}</span>
+                                          {field.notes && (
+                                            <small className="th-note">{field.notes}</small>
+                                          )}
+                                        </div>
+
+                                        <div className="th-actions">
+                                          <button
+                                            type="button"
+                                            className="field-mini-btn"
+                                            onClick={() => {
+                                              setSelectedTableId(table.id);
+                                              openEditFieldDialog(field);
+                                            }}
+                                          >
+                                            Edit
+                                          </button>
+                                          <button
+                                            type="button"
+                                            className="delete-mini"
+                                            onClick={() => {
+                                              setSelectedTableId(table.id);
+                                              requestDeleteField(field.name);
+                                            }}
+                                          >
+                                            Delete
+                                          </button>
+                                        </div>
+                                      </div>
+                                    </th>
                                   ))}
                                   <th>Actions</th>
                                 </tr>
@@ -1939,49 +1998,74 @@ export default function App() {
                             </table>
                           </section>
 
-                          <section className="mobile-table-view">
-                            {table.rows.length === 0 ? (
-                              <div className="empty-inline">No rows yet. Click Add Row.</div>
-                            ) : (
-                              table.rows.map((row, rowIndex) => (
-                                <article key={row.id} className="mobile-row-card">
-                                  <div className="mobile-row-card-header">
-                                    <strong>Row {rowIndex + 1}</strong>
-                                    <button
-                                      className="danger-text"
-                                      type="button"
-                                      onClick={() => {
-                                        setSelectedTableId(table.id);
-                                        requestDeleteRow(row.id);
-                                      }}
-                                    >
-                                      Delete
-                                    </button>
-                                  </div>
+                          {showVertical && (
+                            <section className="vertical-table-view">
+                              {table.rows.length === 0 ? (
+                                <div className="empty-inline">No rows yet. Click Add Row.</div>
+                              ) : (
+                                table.rows.map((row, rowIndex) => (
+                                  <article key={row.id} className="mobile-row-card">
+                                    <div className="mobile-row-card-header">
+                                      <strong>Row {rowIndex + 1}</strong>
+                                      <button
+                                        className="danger-text"
+                                        type="button"
+                                        onClick={() => {
+                                          setSelectedTableId(table.id);
+                                          requestDeleteRow(row.id);
+                                        }}
+                                      >
+                                        Delete
+                                      </button>
+                                    </div>
 
-                                  <div className="mobile-row-grid">
-                                    {table.fields.map((field) => (
-                                      <div key={field.id} className="mobile-row-item">
-                                        <div className="mobile-row-label-wrap">
-                                          <label className="mobile-row-label">
-                                            {field.name}
-                                          </label>
-                                          {field.notes && (
-                                            <small className="mobile-row-note">
-                                              {field.notes}
-                                            </small>
-                                          )}
+                                    <div className="mobile-row-grid">
+                                      {table.fields.map((field) => (
+                                        <div key={field.id} className="mobile-row-item">
+                                          <div className="mobile-row-label-wrap">
+                                            <label className="mobile-row-label">
+                                              {field.name}
+                                            </label>
+                                            {field.notes && (
+                                              <small className="mobile-row-note">
+                                                {field.notes}
+                                              </small>
+                                            )}
+                                            <div className="mobile-field-actions">
+                                              <button
+                                                type="button"
+                                                className="field-mini-btn"
+                                                onClick={() => {
+                                                  setSelectedTableId(table.id);
+                                                  openEditFieldDialog(field);
+                                                }}
+                                              >
+                                                Edit
+                                              </button>
+                                              <button
+                                                type="button"
+                                                className="delete-mini"
+                                                onClick={() => {
+                                                  setSelectedTableId(table.id);
+                                                  requestDeleteField(field.name);
+                                                }}
+                                              >
+                                                Delete
+                                              </button>
+                                            </div>
+                                          </div>
+
+                                          <div className="mobile-row-value">
+                                            {renderEditableCell(table, row, field)}
+                                          </div>
                                         </div>
-                                        <div className="mobile-row-value">
-                                          {renderEditableCell(table, row, field)}
-                                        </div>
-                                      </div>
-                                    ))}
-                                  </div>
-                                </article>
-                              ))
-                            )}
-                          </section>
+                                      ))}
+                                    </div>
+                                  </article>
+                                ))
+                              )}
+                            </section>
+                          )}
                         </div>
                       )}
                     </div>
@@ -2008,7 +2092,11 @@ export default function App() {
         title="Create Sheet"
         actions={
           <>
-            <button className="secondary-btn" type="button" onClick={() => closeDialog(sheetDialogRef)}>
+            <button
+              className="secondary-btn"
+              type="button"
+              onClick={() => closeDialog(sheetDialogRef)}
+            >
               Cancel
             </button>
             <button type="button" onClick={addSheet}>
@@ -2033,7 +2121,11 @@ export default function App() {
         title="Edit Sheet Name"
         actions={
           <>
-            <button className="secondary-btn" type="button" onClick={() => closeDialog(renameSheetDialogRef)}>
+            <button
+              className="secondary-btn"
+              type="button"
+              onClick={() => closeDialog(renameSheetDialogRef)}
+            >
               Cancel
             </button>
             <button type="button" onClick={saveSheetRename}>
@@ -2058,7 +2150,11 @@ export default function App() {
         title="Create Table"
         actions={
           <>
-            <button className="secondary-btn" type="button" onClick={() => closeDialog(tableDialogRef)}>
+            <button
+              className="secondary-btn"
+              type="button"
+              onClick={() => closeDialog(tableDialogRef)}
+            >
               Cancel
             </button>
             <button type="button" onClick={addTable}>
@@ -2083,7 +2179,11 @@ export default function App() {
         title="Edit Table Name"
         actions={
           <>
-            <button className="secondary-btn" type="button" onClick={() => closeDialog(renameTableDialogRef)}>
+            <button
+              className="secondary-btn"
+              type="button"
+              onClick={() => closeDialog(renameTableDialogRef)}
+            >
               Cancel
             </button>
             <button type="button" onClick={saveTableRename}>
@@ -2421,7 +2521,11 @@ export default function App() {
         title="Add Row"
         actions={
           <>
-            <button className="secondary-btn" type="button" onClick={() => closeDialog(rowDialogRef)}>
+            <button
+              className="secondary-btn"
+              type="button"
+              onClick={() => closeDialog(rowDialogRef)}
+            >
               Cancel
             </button>
             <button type="button" onClick={addRow}>
