@@ -4,7 +4,6 @@ import { db } from "./firebase";
 import { doc, onSnapshot, setDoc, serverTimestamp } from "firebase/firestore";
 
 const APP_DOC_PATH = ["apps", "waterloo-account"];
-
 const uid = () => Math.random().toString(36).slice(2, 10);
 
 const emptyData = {
@@ -1551,6 +1550,11 @@ export default function App() {
     );
   }
 
+  function getInputClassName(field) {
+    if (field.type === "number" || field.type === "formula") return "cell-input cell-input-number";
+    return "cell-input";
+  }
+
   function renderEditableCell(table, row, field) {
     if (field.type === "formula") {
       return <div className="formula-cell">{getFormulaValue(row, field, table)}</div>;
@@ -1560,6 +1564,7 @@ export default function App() {
       return (
         <div className="link-cell">
           <select
+            className="cell-input"
             value={row.values[field.name]}
             onChange={(e) => {
               setSelectedTableId(table.id);
@@ -1581,6 +1586,7 @@ export default function App() {
     if (field.type === "number") {
       return (
         <input
+          className={getInputClassName(field)}
           type="text"
           inputMode="decimal"
           value={getCellDisplayValue(
@@ -1617,6 +1623,7 @@ export default function App() {
 
     return (
       <input
+        className={getInputClassName(field)}
         type="text"
         value={row.values[field.name]}
         onChange={(e) => {
@@ -1787,6 +1794,21 @@ export default function App() {
                     </select>
                   </div>
 
+                  <div className="summary-config">
+                    <label>Table quick field</label>
+                    <select
+                      value={selectedCategory.tableQuickFieldName || ""}
+                      onChange={(e) => saveGlobalTableQuickField(e.target.value)}
+                    >
+                      <option value="">None</option>
+                      {allCurrentSheetFieldNames.map((fieldName) => (
+                        <option key={fieldName} value={fieldName}>
+                          {fieldName}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+
                   <button onClick={() => openDialog(tableDialogRef)}>Add Table</button>
                   <button type="button" onClick={openCopyExternalTableDialog}>
                     Copy Table From Sheet
@@ -1794,25 +1816,6 @@ export default function App() {
                 </div>
               </div>
             </header>
-
-            {selectedCategory.tables?.length > 0 && (
-              <section className="global-table-quick-bar">
-                <div className="summary-config global-table-quick-config">
-                  <label>Table quick field</label>
-                  <select
-                    value={selectedCategory.tableQuickFieldName || ""}
-                    onChange={(e) => saveGlobalTableQuickField(e.target.value)}
-                  >
-                    <option value="">None</option>
-                    {allCurrentSheetFieldNames.map((fieldName) => (
-                      <option key={fieldName} value={fieldName}>
-                        {fieldName}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-              </section>
-            )}
 
             {selectedCategory.tables?.length > 0 && (
               <section className="table-accordion-list">
@@ -1860,10 +1863,30 @@ export default function App() {
                           </div>
                         </button>
 
-                        <div className="field-pill-buttons">
+                        <div className="field-pill-buttons table-header-actions">
                           <button
                             type="button"
-                            className="field-mini-btn"
+                            className="field-mini-btn action-mini-btn"
+                            onClick={() => {
+                              setSelectedTableId(table.id);
+                              openAddFieldDialog();
+                            }}
+                          >
+                            Add Field
+                          </button>
+                          <button
+                            type="button"
+                            className="field-mini-btn action-mini-btn"
+                            onClick={() => {
+                              setSelectedTableId(table.id);
+                              openAddRowDialog();
+                            }}
+                          >
+                            Add Row
+                          </button>
+                          <button
+                            type="button"
+                            className="field-mini-btn action-mini-btn"
                             onClick={() => {
                               setSelectedTableId(table.id);
                               openRenameTableDialog(table);
@@ -1873,7 +1896,7 @@ export default function App() {
                           </button>
                           <button
                             type="button"
-                            className="field-mini-btn"
+                            className="field-mini-btn action-mini-btn"
                             onClick={() => {
                               setSelectedTableId(table.id);
                               copyTableWithinSheet(table);
@@ -1883,7 +1906,7 @@ export default function App() {
                           </button>
                           <button
                             type="button"
-                            className="delete-mini"
+                            className="delete-mini action-mini-btn"
                             onClick={() => requestDeleteTable(table.id, table.name)}
                           >
                             Delete
@@ -1893,27 +1916,6 @@ export default function App() {
 
                       {isExpanded && (
                         <div className="table-accordion-body">
-                          <div className="table-toolbar">
-                            <div className="topbar-actions">
-                              <button
-                                onClick={() => {
-                                  setSelectedTableId(table.id);
-                                  openAddFieldDialog();
-                                }}
-                              >
-                                Add Field
-                              </button>
-                              <button
-                                onClick={() => {
-                                  setSelectedTableId(table.id);
-                                  openAddRowDialog();
-                                }}
-                              >
-                                Add Row
-                              </button>
-                            </div>
-                          </div>
-
                           <section
                             className={`table-wrap ${showVertical ? "hide-horizontal-table" : ""}`}
                             ref={(el) => {
